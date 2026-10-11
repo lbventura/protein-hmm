@@ -3,6 +3,7 @@
 from io import StringIO
 
 import numpy as np
+import pytest
 
 from protein_profile_hmm.amino_acids import AA_INDEX, BACKGROUND_FREQ
 from protein_profile_hmm.msa import match_column_mask, parse_stockholm
@@ -242,6 +243,50 @@ def test_init_dp_encodes_query_and_initialises_score_tables() -> None:
     expected_delete = np.full((6, 4), NEG_INF)
     expected_delete[0, 1:] = np.log2([1 / 5, 1 / 10, 1 / 30])
     np.testing.assert_allclose(delete_scores, expected_delete)
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+def test_scoring_uses_begin_probability_for_first_match(method: str) -> None:
+    hmm = _build(["A"] * 3)
+    # The only complete path for one residue is B->M1(A): Begin contributes 4/5.
+    expected = np.log2((4 / 5) * (4 / 23) / BACKGROUND_FREQ[AA_INDEX["A"]])
+    np.testing.assert_allclose(getattr(hmm, method)("A"), expected)
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+def test_scoring_preserves_initial_deletion_path(method: str) -> None:
+    hmm = _build(["AGGCE", "A..CE", "A...E"])
+    # An empty query has exactly one path: B->D1->D2->D3, counted once.
+    np.testing.assert_allclose(getattr(hmm, method)(""), np.log2((1 / 5) * (1 / 2) * (1 / 3)))
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+def test_scoring_one_residue_includes_leading_deletion_costs(method: str) -> None:
+    hmm = _build(["AGGCE", "A..CE", "A...E"])
+    background_a = BACKGROUND_FREQ[AA_INDEX["A"]]
+    # All complete paths for A: match at one position and delete the other two.
+    path_odds = [
+        (4 / 5) * (4 / 23 / background_a) * (1 / 3) * (1 / 3),  # B->M1->D2->D3
+        (1 / 5) * (1 / 2) * (1 / 22 / background_a) * (1 / 5),  # B->D1->M2->D3
+        (1 / 5) * (1 / 2) * (2 / 3) * (1 / 23 / background_a),  # B->D1->D2->M3
+    ]
+    expected = np.log2(max(path_odds) if method == "viterbi" else sum(path_odds))
+    np.testing.assert_allclose(getattr(hmm, method)("A"), expected)
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+def test_scoring_retains_leading_insert_paths(method: str) -> None:
+    hmm = _build(["A"] * 3)
+    match_g = (1 / 23) / BACKGROUND_FREQ[AA_INDEX["G"]]
+    match_a = (4 / 23) / BACKGROUND_FREQ[AA_INDEX["A"]]
+    # Inserts emit at background frequencies. Match each of GGA's residues in turn.
+    path_odds = [
+        (4 / 5) * match_g,  # B->M1(G)->I1(G)->I1(A)
+        (1 / 2) * match_g,  # B->I0(G)->M1(G)->I1(A)
+        (1 / 2) * (1 / 2) * match_a,  # B->I0(G)->I0(G)->M1(A)
+    ]
+    expected = np.log2(max(path_odds) if method == "viterbi" else sum(path_odds))
+    np.testing.assert_allclose(getattr(hmm, method)("GGA"), expected)
 
 
 def test_viterbi_on_training_sequence_is_positive() -> None:
