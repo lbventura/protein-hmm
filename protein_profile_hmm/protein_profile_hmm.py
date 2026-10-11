@@ -242,6 +242,12 @@ class ProfileHMM:
 
         Initialises ``M[0, 0] = 0`` and fills the all-delete prefix
         ``D[0, k]`` for ``k ≥ 1``. All other cells start at ``NEG_INF``.
+
+        This supplies scores for leading gaps, allowing the first query
+        residue to align to a later profile match position. Pseudocount
+        smoothing can give these deletion paths nonzero probabilities even
+        when no training row follows them;
+
         Returns ``(x, L, M, Id, D)``.
         """
         x = self._encoded(seq)

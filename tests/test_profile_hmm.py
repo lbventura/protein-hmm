@@ -221,6 +221,29 @@ def test_transition_distributions_normalised_per_source_state() -> None:
         assert abs(d_sum - 1.0) < 1e-6
 
 
+def test_init_dp_encodes_query_and_initialises_score_tables() -> None:
+    """Five query residues initialise score tables for a three-position profile."""
+    hmm = _build(["AGGCE", "A..CE", "A...E"])
+    encoded, query_length, match_scores, insert_scores, delete_scores = hmm._init_dp("AAAAA")
+
+    assert encoded == [0, 0, 0, 0, 0]  # A is encoded as 0.
+    assert query_length == 5
+    assert hmm.K == 3
+    # Rows count consumed residues (0..5); columns count profile positions (0..3).
+    for scores in (match_scores, insert_scores, delete_scores):
+        assert scores.shape == (6, 4)
+
+    expected_match = np.full((6, 4), NEG_INF)
+    expected_match[0, 0] = 0.0  # Start before consuming residues or profile positions.
+    np.testing.assert_array_equal(match_scores, expected_match)
+    np.testing.assert_array_equal(insert_scores, np.full((6, 4), NEG_INF))
+
+    # Without consuming residues, B->D1->D2->D3 uses probabilities 1/5, 1/2, 1/3.
+    expected_delete = np.full((6, 4), NEG_INF)
+    expected_delete[0, 1:] = np.log2([1 / 5, 1 / 10, 1 / 30])
+    np.testing.assert_allclose(delete_scores, expected_delete)
+
+
 def test_viterbi_on_training_sequence_is_positive() -> None:
     hmm = _build(["ACDEFGHIK"] * 3)
     score = hmm.viterbi("ACDEFGHIK")
