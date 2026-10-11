@@ -42,7 +42,14 @@ Keep code in the layer that owns its behavior. Avoid duplicating model or parsin
 
 ### Branches
 
-Create a branch from an up-to-date `main`. Use a short, lowercase, hyphen-separated name describing the change.
+Create a branch from an up-to-date `main`. Use a short, lowercase, hyphen-separated name describing the change. These should be prefixed with the following pattern:
+
+- `enhancement/` for new functionality or improvements to existing functionality.
+- `maintenance/` for upkeep, dependency, and tooling changes.
+- `observability/` for logging and diagnostics.
+- `testing/` for tests and test infrastructure.
+- `infrastructure/` for environment, pipeline, and runtime setup.
+- `fix/` for bug fixes.
 
 ### Pull requests
 
