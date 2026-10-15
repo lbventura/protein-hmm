@@ -272,36 +272,39 @@ class ProfileHMM:
         K = self.K
         NI = NEG_INF
 
-        for i in range(0, L + 1):
+        # Row zero already contains the complete leading deletion paths.
+        for i in range(1, L + 1):
+            aa = x[i - 1]
             for k in range(0, K + 1):
-                if i > 0:
-                    aa = x[i - 1]
-                    if k >= 1:
+                if k >= 1:
+                    if k == 1:
+                        # M[0, 0] represents Begin; use BM, not an ordinary MM edge.
+                        cands = [
+                            M[i - 1, 0] + float(self.log_trans[0, T_BM]),
+                            Id[i - 1, 0] + float(self.log_trans[0, T_IM]),
+                        ]
+                    else:
                         cands = [
                             M[i - 1, k - 1] + float(self.log_trans[k - 1, T_MM]),
                             Id[i - 1, k - 1] + float(self.log_trans[k - 1, T_IM]),
                             D[i - 1, k - 1] + float(self.log_trans[k - 1, T_DM]),
                         ]
-                        if k == 1:
-                            cands.append(M[i - 1, 0] + float(self.log_trans[0, T_BM]))
-                        best = max(cands)
-                        if best > NI / 2:
-                            M[i, k] = self._match_odds(k - 1, aa) + best
-                    cands_i = [
-                        M[i - 1, k] + float(self.log_trans[k, T_MI]),
-                        Id[i - 1, k] + float(self.log_trans[k, T_II]),
-                    ]
-                    best_i = max(cands_i)
-                    if best_i > NI / 2:
-                        Id[i, k] = self._insert_odds(k, aa) + best_i
-                # Silent D update (also at i==0, but skip i==0 to preserve init)
-                if k >= 1 and i >= 0:
+                    best = max(cands)
+                    if best > NI / 2:
+                        M[i, k] = self._match_odds(k - 1, aa) + best
+                cands_i = [
+                    M[i - 1, k] + float(self.log_trans[k, T_MI]),
+                    Id[i - 1, k] + float(self.log_trans[k, T_II]),
+                ]
+                best_i = max(cands_i)
+                if best_i > NI / 2:
+                    Id[i, k] = self._insert_odds(k, aa) + best_i
+                # D1 is reachable only before consuming residues, via Begin.
+                if k >= 2:
                     cands_d = [
                         M[i, k - 1] + float(self.log_trans[k - 1, T_MD]),
                         D[i, k - 1] + float(self.log_trans[k - 1, T_DD]),
                     ]
-                    if k == 1:
-                        cands_d.append(M[i, 0] + float(self.log_trans[0, T_BD]))
                     best_d = max(cands_d)
                     if best_d > D[i, k]:
                         D[i, k] = best_d
@@ -315,37 +318,38 @@ class ProfileHMM:
         K = self.K
         NI = NEG_INF
 
-        for i in range(0, L + 1):
+        # Preserve the initialized deletion prefix without counting it again.
+        for i in range(1, L + 1):
+            aa = x[i - 1]
             for k in range(0, K + 1):
-                if i > 0:
-                    aa = x[i - 1]
-                    if k >= 1:
+                if k >= 1:
+                    if k == 1:
+                        # Begin and I0 are the only predecessors of M1.
+                        contribs = [
+                            M[i - 1, 0] + float(self.log_trans[0, T_BM]),
+                            Id[i - 1, 0] + float(self.log_trans[0, T_IM]),
+                        ]
+                    else:
                         contribs = [
                             M[i - 1, k - 1] + float(self.log_trans[k - 1, T_MM]),
                             Id[i - 1, k - 1] + float(self.log_trans[k - 1, T_IM]),
                             D[i - 1, k - 1] + float(self.log_trans[k - 1, T_DM]),
                         ]
-                        if k == 1:
-                            contribs.append(M[i - 1, 0] + float(self.log_trans[0, T_BM]))
-                        s = log2sumexp2(contribs)
-                        if s > NI / 2:
-                            M[i, k] = self._match_odds(k - 1, aa) + s
-                    contribs_i = [
-                        M[i - 1, k] + float(self.log_trans[k, T_MI]),
-                        Id[i - 1, k] + float(self.log_trans[k, T_II]),
-                    ]
-                    s_i = log2sumexp2(contribs_i)
-                    if s_i > NI / 2:
-                        Id[i, k] = self._insert_odds(k, aa) + s_i
-                if k >= 1:
+                    s = log2sumexp2(contribs)
+                    if s > NI / 2:
+                        M[i, k] = self._match_odds(k - 1, aa) + s
+                contribs_i = [
+                    M[i - 1, k] + float(self.log_trans[k, T_MI]),
+                    Id[i - 1, k] + float(self.log_trans[k, T_II]),
+                ]
+                s_i = log2sumexp2(contribs_i)
+                if s_i > NI / 2:
+                    Id[i, k] = self._insert_odds(k, aa) + s_i
+                if k >= 2:
                     contribs_d = [
                         M[i, k - 1] + float(self.log_trans[k - 1, T_MD]),
                         D[i, k - 1] + float(self.log_trans[k - 1, T_DD]),
                     ]
-                    if k == 1:
-                        contribs_d.append(M[i, 0] + float(self.log_trans[0, T_BD]))
-                    s_d = log2sumexp2(contribs_d)
-                    # combine with any pre-existing initial D[i,k] value
-                    D[i, k] = log2sumexp2([D[i, k], s_d])
+                    D[i, k] = log2sumexp2(contribs_d)
 
         return float(log2sumexp2([M[L, K], Id[L, K], D[L, K]]))
