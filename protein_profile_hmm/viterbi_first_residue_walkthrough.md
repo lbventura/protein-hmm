@@ -140,7 +140,7 @@ a delete state adds only the transition score, since this state skips a profile
 position without emitting or consuming a query residue. Therefore, no amino
 acid emission probability has to be scored.
 
-### Count and normalize the transitions
+### Transition probabilities
 
 The three training rows give these paths:
 
@@ -154,7 +154,7 @@ The two middle alignment columns are insert columns. A `.` there contributes
 no state or transition. The third row's gap at the M2 column instead produces `D2`.
 
 `trans_counts` starts with one pseudocount per transition. The denominator is
-the sum of the smoothed counts for transitions leaving the same source state.
+the sum of the smoothed counts for allowed transitions from the same source state.
 The order of each list below matches the order in the transition column.
 
 | Source and slot | Transitions | Observed counts | Counts plus one each | Total | Probabilities |
