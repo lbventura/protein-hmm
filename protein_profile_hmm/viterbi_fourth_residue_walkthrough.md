@@ -36,7 +36,7 @@ the same `i` and consume nothing.
 
 Green and red boxes show retained and rejected candidates for a particular
 destination, before its emission score is added. Dotted arrows mark rejected
-candidates. 
+candidates.
 
 Arrow labels give the `log_trans` entry and the score added, in bits.
 The probability-to-score computations remain [below](#transition-and-emission-contributions).
