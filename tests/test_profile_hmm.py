@@ -5,9 +5,11 @@ from io import StringIO
 import numpy as np
 import pytest
 
-from protein_profile_hmm.amino_acids import AA_INDEX, BACKGROUND_FREQ
-from protein_profile_hmm.msa import match_column_mask, parse_stockholm
+import protein_profile_hmm.protein_profile_hmm as profile_module
+from protein_profile_hmm.amino_acids import AA_INDEX, BACKGROUND_FREQ, _encode_rows
+from protein_profile_hmm.msa import MSA, match_column_mask, parse_stockholm
 from protein_profile_hmm.protein_profile_hmm import (
+    N_TRANS,
     NEG_INF,
     T_BD,
     T_BM,
@@ -19,6 +21,11 @@ from protein_profile_hmm.protein_profile_hmm import (
     T_MI,
     T_MM,
     ProfileHMM,
+    _count_emissions,
+    _count_profile,
+    _count_transitions,
+    _normalise_rows,
+    _normalise_transitions,
     log2sumexp2,
 )
 
@@ -47,6 +54,152 @@ def test_log2sumexp2_empty_returns_neg_inf() -> None:
     assert log2sumexp2([]) == NEG_INF
 
 
+@pytest.mark.parametrize(
+    ("rows", "columns", "slots", "n_slots", "observations"),
+    [
+        (["AAA", "A.-"], [True, False, True], [0, 99, 0], 2, [(0, "A", 3)]),
+        (["A-", "-C"], [False, False], [0, 1], 2, []),
+        (["--", ".."], [True, True], [0, 1], 2, []),
+        (["AY", "AY"], [True, True], [0, 129], 130, [(0, "A", 2), (129, "Y", 2)]),
+    ],
+    ids=["repeated-selected-bins", "no-selected-columns", "only-gaps", "wide-slot-index"],
+)
+def test_count_emissions_counts_only_selected_residues(
+    rows: list[str],
+    columns: list[bool],
+    slots: list[int],
+    n_slots: int,
+    observations: list[tuple[int, str, int]],
+) -> None:
+    counts = _count_emissions(_encode_rows(rows), np.array(columns), np.array(slots), n_slots)
+    expected = np.zeros((n_slots, 20), dtype=np.int64)
+    for slot, residue, count in observations:
+        expected[slot, AA_INDEX[residue]] = count
+    np.testing.assert_array_equal(counts, expected)
+    assert np.issubdtype(counts.dtype, np.integer)
+
+
+@pytest.mark.parametrize(
+    ("rows", "columns", "edges"),
+    [
+        # M1 -> I1 -> I1 -> M2 -> M3; M1 -> M2 -> M3; M1 -> D2 -> M3.
+        (
+            ["AGGCE", "A..CE", "A...E"],
+            "M..MM",
+            [
+                (0, T_BM, 3),
+                (1, T_MI, 1),
+                (1, T_II, 1),
+                (1, T_IM, 1),
+                (1, T_MM, 1),
+                (1, T_MD, 1),
+                (2, T_MM, 2),
+                (2, T_DM, 1),
+            ],
+        ),
+        # Leading/trailing insert loops; empty insert columns preserve predecessors.
+        (
+            ["GGA..CYY", "..A..C..", ".....C.."],
+            "..M..M..",
+            [
+                (0, T_MI, 1),
+                (0, T_II, 1),
+                (0, T_IM, 1),
+                (0, T_BM, 1),
+                (0, T_BD, 1),
+                (1, T_MM, 2),
+                (1, T_DM, 1),
+                (2, T_MI, 1),
+                (2, T_II, 1),
+            ],
+        ),
+        # I1 -> D2 folds into IM; D2 -> D3 extends the deletion chain.
+        (
+            ["AGG..E", "A..CGE"],
+            "M..MMM",
+            [
+                (0, T_BM, 2),
+                (1, T_MI, 1),
+                (1, T_II, 1),
+                (1, T_IM, 1),
+                (1, T_MM, 1),
+                (2, T_DD, 1),
+                (2, T_MM, 1),
+                (3, T_DM, 1),
+                (3, T_MM, 1),
+            ],
+        ),
+        # D2 -> I2 folds into DM, followed by a terminal insert loop.
+        (
+            ["A.GG", "AC.."],
+            "MM..",
+            [(0, T_BM, 2), (1, T_MD, 1), (1, T_MM, 1), (2, T_DM, 1), (2, T_II, 1)],
+        ),
+        ([".", "A", "-"], "M", [(0, T_BM, 1), (0, T_BD, 2)]),
+    ],
+    ids=["internal-paths", "boundary-inserts", "insert-delete-chain", "delete-insert", "K1"],
+)
+def test_count_transitions_counts_row_paths_without_end_or_cross_row_edges(
+    rows: list[str], columns: str, edges: list[tuple[int, int, int]]
+) -> None:
+    mask = np.array([column == "M" for column in columns])
+    counts = _count_transitions(_encode_rows(rows), mask, np.cumsum(mask, dtype=np.intp))
+    expected = np.zeros((columns.count("M") + 1, N_TRANS), dtype=np.int64)
+    for slot, transition, count in edges:
+        expected[slot, transition] = count
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_profile_assigns_match_positions_and_boundary_insert_slots() -> None:
+    # Paths: I0(G) -> M1(A) -> I1(Y); D1; M1(A).
+    encoded = _encode_rows(["GAY", "...", ".A."])
+    match, insert, trans = _count_profile(encoded, np.array([False, True, False]))
+    expected_match = np.zeros((1, 20), dtype=np.int64)
+    expected_match[0, AA_INDEX["A"]] = 2
+    expected_insert = np.zeros((2, 20), dtype=np.int64)
+    expected_insert[0, AA_INDEX["G"]] = 1
+    expected_insert[1, AA_INDEX["Y"]] = 1
+    expected_trans = np.zeros((2, N_TRANS), dtype=np.int64)
+    expected_trans[0, [T_MI, T_IM, T_BD, T_BM]] = 1
+    expected_trans[1, T_MI] = 1
+    np.testing.assert_array_equal(match, expected_match)
+    np.testing.assert_array_equal(insert, expected_insert)
+    np.testing.assert_array_equal(trans, expected_trans)
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_normalise_rows_handles_zero_and_small_counts_without_mutating_input(empty: bool) -> None:
+    counts = np.array([[1.0, 3.0], [0.0, 0.0], [1e-200, 3e-200]])
+    expected = np.array([[0.25, 0.75], [0.0, 0.0], [0.25, 0.75]])
+    if empty:
+        counts, expected = counts[:0], expected[:0]
+    original = counts.copy()
+    actual = _normalise_rows(counts)
+    np.testing.assert_allclose(actual, expected)
+    np.testing.assert_array_equal(counts, original)
+    assert actual.dtype == np.float64
+
+
+@pytest.mark.parametrize("K", [1, 3])
+@pytest.mark.parametrize("scale", [0.0, 1.0])
+def test_normalise_transitions_preserves_boundary_rules_and_unused_cells(
+    K: int, scale: float
+) -> None:
+    counts = np.tile([2.0, 3, 5, 7, 11, 13, 17, 19, 23], (K + 1, 1)) * scale
+    original = counts.copy()
+    expected = (
+        np.array(
+            [[2, 1, 5, 7 / 18, 11 / 18, 13, 17, 19 / 42, 23 / 42]]
+            + [[0.2, 0.3, 0.5, 7 / 18, 11 / 18, 13 / 30, 17 / 30, 19, 23]] * (K - 1)
+            + [[2, 1, 5, 7, 1, 13, 17, 19, 23]]
+        )
+        * scale
+    )
+    actual = _normalise_transitions(counts)
+    np.testing.assert_allclose(actual, expected)
+    np.testing.assert_array_equal(counts, original)
+
+
 def test_build_from_msa_picks_correct_number_of_match_columns() -> None:
     hmm = _build(["ACDE", "ACDE"], symfrac=0.5, pseudocount=1.0)
     assert hmm.K == 4
@@ -55,6 +208,27 @@ def test_build_from_msa_picks_correct_number_of_match_columns() -> None:
 def test_build_from_msa_treats_low_residue_columns_as_insert() -> None:
     hmm = _build(["AC.DE", "AC.DE", "AC.DE"], symfrac=0.5, pseudocount=1.0)
     assert hmm.K == 4
+
+
+@pytest.mark.parametrize("rows", [[], [""], ["...", "---"]])
+def test_build_from_msa_rejects_empty_or_no_match_alignment(rows: list[str]) -> None:
+    with pytest.raises(ValueError, match="empty MSA|no match columns"):
+        ProfileHMM.build_from_msa(MSA([], rows))
+
+
+def test_build_from_msa_batches_reject_no_match_columns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(profile_module, "_MAX_BATCH_CELLS", 1)
+    with pytest.raises(ValueError, match="no match columns"):
+        _build(["...", "---"])
+
+
+@pytest.mark.parametrize("rows", [["AC", "A"], ["A", "AC"], ["AC", "G", "EYY"]])
+def test_build_from_msa_rejects_ragged_rows_before_batching(
+    rows: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(profile_module, "_MAX_BATCH_CELLS", 1)
+    with pytest.raises(ValueError, match="equal lengths"):
+        ProfileHMM.build_from_msa(MSA([], rows))
 
 
 def test_build_from_msa_uses_occupancy_not_identity_for_match_columns() -> None:
@@ -139,8 +313,12 @@ def test_build_from_msa_distinguishes_insert_columns_from_deleted_positions() ->
     np.testing.assert_allclose(hmm.log_trans, without_empty_column.log_trans)
 
 
-def test_build_from_msa_handles_leading_insert_match_and_delete_paths() -> None:
+@pytest.mark.parametrize("batch_cells", [1, 6, 250_000])
+def test_build_from_msa_handles_leading_insert_match_and_delete_paths(
+    monkeypatch: pytest.MonkeyPatch, batch_cells: int
+) -> None:
     """At the start, rows can insert a residue, match M1, or skip it."""
+    monkeypatch.setattr(profile_module, "_MAX_BATCH_CELLS", batch_cells)
     rows = ["GAC", ".AC", "..C"]
     # Columns: G.. -> I0, AA. -> M1, CCC -> M2.
     assert match_column_mask(rows).tolist() == [False, True, True]
@@ -220,6 +398,44 @@ def test_transition_distributions_normalised_per_source_state() -> None:
         assert abs(m_sum - 1.0) < 1e-6
         assert abs(i_sum - 1.0) < 1e-6
         assert abs(d_sum - 1.0) < 1e-6
+
+
+def test_emission_odds_use_the_requested_state_residue_and_background() -> None:
+    hmm = ProfileHMM(
+        K=2,
+        log_match_emit=np.full((2, 20), -9.0),
+        log_insert_emit=np.full((3, 20), -9.0),
+        log_trans=np.zeros((3, N_TRANS)),
+        log_bg=np.full(20, -4.0),
+    )
+    a, c = AA_INDEX["A"], AA_INDEX["C"]
+    hmm.log_bg[c] = -3.0
+    hmm.log_match_emit[0, a] = -5.0
+    hmm.log_match_emit[1, c] = -1.0
+    hmm.log_insert_emit[0, a] = -4.0
+    hmm.log_insert_emit[2, c] = -6.0
+    assert hmm._match_odds(0, a) == -1.0
+    assert hmm._match_odds(1, c) == 2.0
+    assert hmm._insert_odds(0, a) == 0.0
+    assert hmm._insert_odds(2, c) == -3.0
+
+
+@pytest.mark.parametrize("seq, expected", [("", []), ("x-.?", []), ("aſßéıx", [0, 15, 7])])
+def test_init_dp_handles_filtered_queries_and_single_match_profiles(
+    seq: str, expected: list[int]
+) -> None:
+    hmm = _build(["A", "A"])
+    encoded, length, match, insert, delete = hmm._init_dp(seq)
+    assert encoded == expected
+    assert length == len(expected)
+    shape = (len(expected) + 1, 2)
+    expected_match = np.full(shape, NEG_INF)
+    expected_match[0, 0] = 0.0
+    expected_delete = np.full(shape, NEG_INF)
+    expected_delete[0, 1] = -2.0  # Begin->D1 has probability 1/4.
+    np.testing.assert_array_equal(match, expected_match)
+    np.testing.assert_array_equal(insert, np.full(shape, NEG_INF))
+    np.testing.assert_array_equal(delete, expected_delete)
 
 
 def test_init_dp_encodes_query_and_initialises_score_tables() -> None:

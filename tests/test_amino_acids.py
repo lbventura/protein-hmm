@@ -1,9 +1,14 @@
 """Tests for the amino-acid alphabet and background frequencies."""
 
+import numpy as np
+import pytest
+
 from protein_profile_hmm.amino_acids import (
     AA_ALPHABET,
     AA_INDEX,
     BACKGROUND_FREQ,
+    _alignment_width,
+    _encode_rows,
     encode,
     is_residue,
 )
@@ -48,3 +53,39 @@ def test_is_residue_filters_alignment_chars() -> None:
     assert is_residue("-") is False
     assert is_residue(".") is False
     assert is_residue("X") is False
+
+
+@pytest.mark.parametrize("rows, width", [([], 0), (["", ""], 0), (["AC", "ſß"], 2)])
+def test_alignment_width_counts_characters_in_rectangular_rows(rows: list[str], width: int) -> None:
+    assert _alignment_width(rows) == width
+
+
+@pytest.mark.parametrize("rows", [["AC", "A"], ["A", "AC"], ["AC", "G", "EYY"]])
+def test_alignment_width_rejects_unequal_row_lengths(rows: list[str]) -> None:
+    with pytest.raises(ValueError, match="equal lengths"):
+        _alignment_width(rows)
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        ([], []),
+        (["", ""], [[], []]),
+        ([AA_ALPHABET, AA_ALPHABET.lower()], [list(range(20)), list(range(20))]),
+        (["ACy", "-.X"], [[0, 1, 19], [-1, -1, -1]]),
+        (["aſßéıx", "ACG--."], [[0, 15, -1, -1, 7, -1], [0, 1, 5, -1, -1, -1]]),
+    ],
+)
+def test_encode_rows_preserves_residues_and_coordinates(
+    rows: list[str], expected: list[list[int]]
+) -> None:
+    encoded = _encode_rows(rows)
+    assert encoded.dtype == np.int8
+    assert encoded.shape == (len(rows), len(rows[0]) if rows else 0)
+    assert encoded.tolist() == expected
+
+
+@pytest.mark.parametrize("rows", [["AC", "A"], ["AC", "G", "EYY"]])
+def test_encode_rows_rejects_ragged_alignment(rows: list[str]) -> None:
+    with pytest.raises(ValueError, match="equal lengths"):
+        _encode_rows(rows)

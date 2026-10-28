@@ -34,6 +34,7 @@ the conventional background for profile-HMM scoring.
 """
 
 import numpy as np
+import numpy.typing as npt
 
 AA_ALPHABET: str = "ACDEFGHIKLMNPQRSTVWY"
 N_AMINO_ACIDS: int = len(AA_ALPHABET)
@@ -63,7 +64,7 @@ _BG_RAW = {
     "Y": 0.0320,  # Tyrosine
 }
 _bg = np.array([_BG_RAW[aa] for aa in AA_ALPHABET], dtype=float)
-BACKGROUND_FREQ: np.ndarray = _bg / _bg.sum()
+BACKGROUND_FREQ: npt.NDArray[np.float64] = _bg / _bg.sum()
 
 
 def encode(residue: str) -> int:
@@ -80,3 +81,26 @@ def encode(residue: str) -> int:
 def is_residue(c: str) -> bool:
     """True iff ``c`` is one of the 20 canonical amino-acid letters."""
     return encode(c) >= 0
+
+
+_ASCII_INDEX = np.array([encode(chr(i)) for i in range(128)], dtype=np.int8)
+
+
+def _alignment_width(rows: list[str]) -> int:
+    """Validate rectangular rows before encoding or dividing them into batches."""
+    width = len(rows[0]) if rows else 0
+    if any(len(row) != width for row in rows):
+        raise ValueError("MSA rows must have equal lengths")
+    return width
+
+
+def _encode_rows(rows: list[str]) -> npt.NDArray[np.int8]:
+    """Encode aligned rows once; preserve one column per input character."""
+    width = _alignment_width(rows)
+    text = "".join(rows)
+    if text.isascii():
+        encoded = _ASCII_INDEX[np.frombuffer(text.encode("ascii"), dtype=np.uint8)]
+    else:
+        # Whole-string uppercasing can expand Unicode characters (e.g. ß).
+        encoded = np.fromiter((encode(ch) for ch in text), dtype=np.int8, count=len(text))
+    return encoded.reshape(len(rows), width)
