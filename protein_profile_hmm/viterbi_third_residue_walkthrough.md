@@ -426,7 +426,7 @@ Training row 3:     A          gap        E         no residues
 Query assignment:   gap (D1)   gap (D2)   first A   second A, third A
 ```
 
-This tentative profile is similar to that observed in Row 1 of the training data. 
+This tentative profile is similar to that observed in Row 1 of the training data.
 
 For deletion, compare `M[3, 2]` and `D[3, 2]`, both computed at `i = 3, k = 2`:
 
