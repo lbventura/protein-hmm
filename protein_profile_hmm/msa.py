@@ -93,9 +93,5 @@ def match_column_mask(rows: list[str], symfrac: float = 0.5) -> np.ndarray:
     if not rows:
         return np.zeros(0, dtype=bool)
     encoded = _encode_rows(rows)
-    return _match_mask(np.count_nonzero(encoded >= 0, axis=0), len(rows), symfrac)
-
-
-def _match_mask(occupancy: np.ndarray, n_seqs: int, symfrac: float) -> np.ndarray:
-    """Choose columns from global occupancy, including when rows are batched."""
-    return occupancy / n_seqs >= symfrac
+    occupancy: np.ndarray = np.count_nonzero(encoded >= 0, axis=0)
+    return occupancy / len(rows) >= symfrac

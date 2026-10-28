@@ -38,22 +38,9 @@ import numpy as np
 import numpy.typing as npt
 
 from .amino_acids import BACKGROUND_FREQ, N_AMINO_ACIDS, _alignment_width, _encode_rows, encode
-from .msa import MSA, _match_mask
+from .msa import MSA
 
 NEG_INF: float = -1e30
-
-
-def log2sumexp2(values: Iterable[float]) -> float:
-    """log2(sum(2**v for v in values)), numerically stable."""
-    arr = np.asarray(list(values), dtype=float)
-    if arr.size == 0:
-        return NEG_INF
-    m = float(arr.max())
-    if m <= NEG_INF / 2:
-        return NEG_INF
-    return m + float(np.log2(np.sum(2.0 ** (arr - m))))
-
-
 T_MM = 0
 T_MI = 1
 T_MD = 2
@@ -78,6 +65,17 @@ _TRANSITION_TYPES = np.array(
     ],
     dtype=np.intp,
 )
+
+
+def log2sumexp2(values: Iterable[float]) -> float:
+    """log2(sum(2**v for v in values)), numerically stable."""
+    arr = np.asarray(list(values), dtype=float)
+    if arr.size == 0:
+        return NEG_INF
+    m = float(arr.max())
+    if m <= NEG_INF / 2:
+        return NEG_INF
+    return m + float(np.log2(np.sum(2.0 ** (arr - m))))
 
 
 def _count_emissions(
@@ -201,7 +199,7 @@ class ProfileHMM:
                 occupancy += np.count_nonzero(
                     _encode_rows(rows[start : start + batch_rows]) >= 0, axis=0
                 )
-        is_match = _match_mask(occupancy, len(rows), symfrac)
+        is_match = occupancy / len(rows) >= symfrac
         K = int(is_match.sum())
         if K == 0:
             raise ValueError("MSA has no match columns under symfrac")
@@ -238,14 +236,6 @@ class ProfileHMM:
             log_bg=log_bg,
         )
 
-    def _encoded(self, seq: str) -> list[int]:
-        out = []
-        for ch in seq:
-            j = encode(ch)
-            if j >= 0:
-                out.append(j)
-        return out
-
     def _match_odds(self, k: int, aa: int) -> float:
         return float(self.log_match_emit[k, aa] - self.log_bg[aa])
 
@@ -265,7 +255,11 @@ class ProfileHMM:
 
         Returns ``(x, L, M, Id, D)``.
         """
-        x = self._encoded(seq)
+        x = []
+        for ch in seq:
+            aa = encode(ch)
+            if aa >= 0:
+                x.append(aa)
         L = len(x)
         K = self.K
 
