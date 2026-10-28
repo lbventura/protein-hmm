@@ -5,8 +5,9 @@ from io import StringIO
 import numpy as np
 import pytest
 
+import protein_profile_hmm.protein_profile_hmm as profile_module
 from protein_profile_hmm.amino_acids import AA_INDEX, BACKGROUND_FREQ
-from protein_profile_hmm.msa import match_column_mask, parse_stockholm
+from protein_profile_hmm.msa import MSA, match_column_mask, parse_stockholm
 from protein_profile_hmm.protein_profile_hmm import (
     NEG_INF,
     T_BD,
@@ -55,6 +56,27 @@ def test_build_from_msa_picks_correct_number_of_match_columns() -> None:
 def test_build_from_msa_treats_low_residue_columns_as_insert() -> None:
     hmm = _build(["AC.DE", "AC.DE", "AC.DE"], symfrac=0.5, pseudocount=1.0)
     assert hmm.K == 4
+
+
+@pytest.mark.parametrize("rows", [[], [""], ["...", "---"]])
+def test_build_from_msa_rejects_empty_or_no_match_alignment(rows: list[str]) -> None:
+    with pytest.raises(ValueError, match="empty MSA|no match columns"):
+        ProfileHMM.build_from_msa(MSA([], rows))
+
+
+def test_build_from_msa_batches_reject_no_match_columns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(profile_module, "_MAX_BATCH_CELLS", 1)
+    with pytest.raises(ValueError, match="no match columns"):
+        _build(["...", "---"])
+
+
+@pytest.mark.parametrize("rows", [["AC", "A"], ["A", "AC"], ["AC", "G", "EYY"]])
+def test_build_from_msa_rejects_ragged_rows_before_batching(
+    rows: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(profile_module, "_MAX_BATCH_CELLS", 1)
+    with pytest.raises(ValueError, match="equal lengths"):
+        ProfileHMM.build_from_msa(MSA([], rows))
 
 
 def test_build_from_msa_uses_occupancy_not_identity_for_match_columns() -> None:

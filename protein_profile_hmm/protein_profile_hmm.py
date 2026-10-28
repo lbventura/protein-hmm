@@ -37,8 +37,8 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
-from .amino_acids import BACKGROUND_FREQ, N_AMINO_ACIDS, encode
-from .msa import MSA, match_column_mask
+from .amino_acids import BACKGROUND_FREQ, N_AMINO_ACIDS, _alignment_width, _encode_rows, encode
+from .msa import MSA, _match_mask
 
 NEG_INF: float = -1e30
 
@@ -64,6 +64,89 @@ T_DD = 6
 T_BM = 7
 T_BD = 8
 N_TRANS = 9
+
+# Limit event/index temporaries to one batch; a single wider row is still allowed.
+_MAX_BATCH_CELLS = 250_000
+_BEGIN, _MATCH, _INSERT, _DELETE = range(4)
+# Source rows and destination columns are B, M, I, D; edges into B are excluded.
+_TRANSITION_TYPES = np.array(
+    [
+        [-1, T_BM, T_MI, T_BD],
+        [-1, T_MM, T_MI, T_MD],
+        [-1, T_IM, T_II, T_IM],  # Preserve I->D folding into I->M.
+        [-1, T_DM, T_DM, T_DD],  # Preserve D->I folding into D->M.
+    ],
+    dtype=np.intp,
+)
+
+
+def _count_emissions(
+    encoded: npt.NDArray[np.int8], columns: np.ndarray, slots: np.ndarray, n_slots: int
+) -> npt.NDArray[np.int64]:
+    """Histogram (profile slot, residue) pairs without a one-hot array."""
+    rows, cols = np.nonzero((encoded >= 0) & columns)
+    keys = N_AMINO_ACIDS * slots[cols] + encoded[rows, cols]
+    return np.bincount(keys, minlength=n_slots * N_AMINO_ACIDS).reshape(n_slots, N_AMINO_ACIDS)
+
+
+def _count_transitions(
+    encoded: npt.NDArray[np.int8], is_match: np.ndarray, positions: np.ndarray
+) -> npt.NDArray[np.int64]:
+    """Count adjacent state events, skipping gaps only in insert columns."""
+    n_rows, width = encoded.shape
+    occupied = encoded >= 0
+    # Each row starts with its own Begin; -1 marks a cell that emits no event.
+    events = np.full((n_rows, width + 1), _BEGIN, dtype=np.int8)
+    events[:, 1:] = np.where(
+        is_match, np.where(occupied, _MATCH, _DELETE), np.where(occupied, _INSERT, -1)
+    )
+    flat = events.ravel()
+    indices = np.flatnonzero(flat >= 0)
+    kinds = flat[indices]
+    slots = np.r_[0, positions][indices % (width + 1)]
+    # Exclude the artificial edge from the end of one row to the next Begin.
+    within_row = kinds[1:] != _BEGIN
+    types = _TRANSITION_TYPES[kinds[:-1][within_row], kinds[1:][within_row]]
+    keys = N_TRANS * slots[:-1][within_row] + types
+    n_slots = int(is_match.sum()) + 1
+    return np.bincount(keys, minlength=n_slots * N_TRANS).reshape(n_slots, N_TRANS)
+
+
+def _count_profile(
+    encoded: npt.NDArray[np.int8], is_match: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return observed match, insert, and transition counts without priors."""
+    positions = np.cumsum(is_match, dtype=np.intp)
+    K = int(is_match.sum())
+    return (
+        _count_emissions(encoded, is_match, positions - 1, K),
+        _count_emissions(encoded, ~is_match, positions, K + 1),
+        _count_transitions(encoded, is_match, positions),
+    )
+
+
+def _normalise_rows(counts: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    sums = counts.sum(axis=1, keepdims=True)
+    return np.divide(counts, np.where(sums <= 0, 1.0, sums))
+
+
+def _normalise_transitions(counts: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Normalize each source's alternatives, retaining current boundary rules."""
+    probs = counts.copy()
+    groups = (
+        probs[0:1, T_BM : T_BD + 1],  # Begin's M/D choice.
+        probs[0:1, T_MI : T_MI + 1],  # Virtual M0->I0.
+        probs[0:1, T_IM : T_II + 1],
+        probs[1:-1, T_MM : T_MD + 1],  # Internal M, I, and D sources.
+        probs[1:-1, T_IM : T_II + 1],
+        probs[1:-1, T_DM : T_DD + 1],
+        probs[-1:, T_MI : T_MI + 1],  # Terminal insertion and self-loop.
+        probs[-1:, T_II : T_II + 1],
+    )
+    for group in groups:
+        sums = group.sum(axis=1, keepdims=True)
+        np.divide(group, sums, out=group, where=sums > 0)
+    return probs
 
 
 @dataclass
@@ -96,119 +179,51 @@ class ProfileHMM:
 
         Match columns are chosen by the symfrac rule; the remaining columns are
         treated as inserts attached to the nearest preceding match column.
-        Emissions and transitions are tallied across all aligned rows, smoothed
-        with ``pseudocount`` per cell, normalised, and stored as log2 probs.
+        Observations are counted with array histograms. Match emissions and
+        transitions get ``pseudocount`` per cell; inserts get 20 background-
+        weighted counts in total. Large alignments use row batches with one
+        global match mask. Probabilities are stored in log2 space.
         """
         rows = msa.rows
         if not rows:
             raise ValueError("Cannot build profile from empty MSA")
 
-        is_match = match_column_mask(rows, symfrac=symfrac)
+        width = _alignment_width(rows)
+        batch_rows = max(1, _MAX_BATCH_CELLS // max(width, 1))
+        encoded = None
+        if len(rows) <= batch_rows:
+            encoded = _encode_rows(rows)
+            occupancy = np.count_nonzero(encoded >= 0, axis=0)
+        else:
+            # Column assignments must use all rows, not a mask per batch.
+            occupancy = np.zeros(width, dtype=np.int64)
+            for start in range(0, len(rows), batch_rows):
+                occupancy += np.count_nonzero(
+                    _encode_rows(rows[start : start + batch_rows]) >= 0, axis=0
+                )
+        is_match = _match_mask(occupancy, len(rows), symfrac)
         K = int(is_match.sum())
         if K == 0:
             raise ValueError("MSA has no match columns under symfrac")
 
-        # For each alignment column, create the insert slot it belongs to
-        # (slot = number of match columns at-or-before this column without it).
-        insert_slot_of_col = np.zeros(len(is_match), dtype=int)
-        match_index_of_col = np.full(len(is_match), -1, dtype=int)  # k-1 if match
-        seen = 0
-        for c, m in enumerate(is_match):
-            insert_slot_of_col[c] = seen
-            if m:
-                match_index_of_col[c] = seen
-                seen += 1
+        if encoded is not None:
+            match_counts, insert_counts, trans_counts = _count_profile(encoded, is_match)
+        else:
+            match_counts = np.zeros((K, N_AMINO_ACIDS), dtype=np.int64)
+            insert_counts = np.zeros((K + 1, N_AMINO_ACIDS), dtype=np.int64)
+            trans_counts = np.zeros((K + 1, N_TRANS), dtype=np.int64)
+            for start in range(0, len(rows), batch_rows):
+                batch = _encode_rows(rows[start : start + batch_rows])
+                match, insert, trans = _count_profile(batch, is_match)
+                match_counts += match
+                insert_counts += insert
+                trans_counts += trans
 
-        match_counts = np.full((K, N_AMINO_ACIDS), pseudocount, dtype=float)
-        # Inserts get a smaller pseudocount towards background to keep insert
-        # emissions near background (so insert-emit log-odds is near 0).
-        insert_counts = np.tile(BACKGROUND_FREQ * N_AMINO_ACIDS, (K + 1, 1)).astype(float)
-        trans_counts = np.full((K + 1, N_TRANS), pseudocount, dtype=float)
-
-        for row in rows:
-            # Walk the row, building a path of (kind, idx) and bumping counts
-            prev_kind = "B"
-            prev_k = 0
-            for c, ch in enumerate(row):
-                aa = encode(ch)
-                if is_match[c]:
-                    k = match_index_of_col[c] + 1  # 1-based match column
-                    if aa >= 0:
-                        kind = "M"
-                        match_counts[k - 1, aa] += 1.0
-                    else:
-                        kind = "D"
-                    # transition prev -> this
-                    if prev_kind == "B":
-                        if kind == "M":
-                            trans_counts[0, T_BM] += 1.0
-                        else:  # D
-                            trans_counts[0, T_BD] += 1.0
-                    elif prev_kind == "M":
-                        if kind == "M":
-                            trans_counts[prev_k, T_MM] += 1.0
-                        else:
-                            trans_counts[prev_k, T_MD] += 1.0
-                    elif prev_kind == "I":
-                        # I -> M or I -> D (rare); lump D into M
-                        trans_counts[prev_k, T_IM] += 1.0
-                    elif prev_kind == "D":
-                        if kind == "M":
-                            trans_counts[prev_k, T_DM] += 1.0
-                        else:
-                            trans_counts[prev_k, T_DD] += 1.0
-                    prev_kind = kind
-                    prev_k = k
-                else:
-                    # Insert column
-                    if aa < 0:
-                        continue  # gap inside an insert column is a no-op
-                    slot = int(insert_slot_of_col[c])
-                    insert_counts[slot, aa] += 1.0
-                    # transition prev -> I_slot
-                    if prev_kind == "B":
-                        # B -> I_0 modelled as M_0 -> I_0
-                        trans_counts[0, T_MI] += 1.0
-                    elif prev_kind == "M":
-                        trans_counts[prev_k, T_MI] += 1.0
-                    elif prev_kind == "I":
-                        trans_counts[prev_k, T_II] += 1.0
-                    elif prev_kind == "D":
-                        # D -> I: lump into D -> M for simplicity
-                        trans_counts[prev_k, T_DM] += 1.0
-                    prev_kind = "I"
-                    prev_k = slot
-
-        def _normalise_rows(
-            counts: npt.NDArray[np.float64],
-        ) -> npt.NDArray[np.float64]:
-            sums = counts.sum(axis=1, keepdims=True)
-            sums = np.where(sums <= 0, 1.0, sums)
-            return np.divide(counts, sums)
-
-        match_probs = _normalise_rows(match_counts)
-        insert_probs = _normalise_rows(insert_counts)
-
-        # Transitions are grouped per source state.
-        trans_probs = trans_counts.copy()
-        for k in range(K + 1):
-            groups: list[list[int]] = []
-            if k == 0:
-                groups.append([T_BM, T_BD])  # Begin's choice
-                groups.append([T_MI])  # only M->I from "virtual M_0"
-                groups.append([T_IM, T_II])
-            elif k < K:
-                groups.append([T_MM, T_MI, T_MD])
-                groups.append([T_IM, T_II])
-                groups.append([T_DM, T_DD])
-            else:  # k == K (last column): only loops/self-inserts matter
-                groups.append([T_MI])
-                groups.append([T_II])
-            for grp in groups:
-                s = sum(trans_probs[k, t] for t in grp)
-                if s > 0:
-                    for t in grp:
-                        trans_probs[k, t] /= s
+        # Add priors once, after combining all batches. Inserts retain their
+        # fixed total of 20 background-weighted counts, independent of pseudocount.
+        match_probs = _normalise_rows(match_counts.astype(float) + pseudocount)
+        insert_probs = _normalise_rows(insert_counts + N_AMINO_ACIDS * BACKGROUND_FREQ)
+        trans_probs = _normalise_transitions(trans_counts.astype(float) + pseudocount)
 
         log_match_emit = np.log2(np.clip(match_probs, 1e-300, None))
         log_insert_emit = np.log2(np.clip(insert_probs, 1e-300, None))

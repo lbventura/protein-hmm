@@ -38,7 +38,7 @@ from typing import TextIO
 
 import numpy as np
 
-from .amino_acids import is_residue
+from .amino_acids import _encode_rows
 
 
 @dataclass
@@ -92,11 +92,10 @@ def match_column_mask(rows: list[str], symfrac: float = 0.5) -> np.ndarray:
     """
     if not rows:
         return np.zeros(0, dtype=bool)
-    n_seqs = len(rows)
-    n_cols = len(rows[0])
-    mask = np.zeros(n_cols, dtype=bool)
-    for col in range(n_cols):
-        n_res = sum(1 for row in rows if is_residue(row[col]))
-        frac = n_res / n_seqs
-        mask[col] = frac >= symfrac
-    return mask
+    encoded = _encode_rows(rows)
+    return _match_mask(np.count_nonzero(encoded >= 0, axis=0), len(rows), symfrac)
+
+
+def _match_mask(occupancy: np.ndarray, n_seqs: int, symfrac: float) -> np.ndarray:
+    """Choose columns from global occupancy, including when rows are batched."""
+    return occupancy / n_seqs >= symfrac
