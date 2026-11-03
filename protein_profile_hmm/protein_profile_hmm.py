@@ -33,11 +33,12 @@ Transition layout (slot index k = 0..K):
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import IntEnum
 
 import numpy as np
 import numpy.typing as npt
 
-from .amino_acids import BACKGROUND_FREQ, N_AMINO_ACIDS, _alignment_width, _encode_rows, encode
+from .amino_acids import BACKGROUND_FREQ, N_AMINO_ACIDS, alignment_width, encode, encode_rows
 from .msa import MSA
 
 NEG_INF: float = -1e30
@@ -54,7 +55,6 @@ N_TRANS = 9
 
 # Limit event/index temporaries to one batch; a single wider row is still allowed.
 _MAX_BATCH_CELLS = 250_000
-_BEGIN, _MATCH, _INSERT, _DELETE = range(4)
 # Source rows and destination columns are B, M, I, D; edges into B are excluded.
 _TRANSITION_TYPES = np.array(
     [
@@ -65,6 +65,15 @@ _TRANSITION_TYPES = np.array(
     ],
     dtype=np.intp,
 )
+
+
+class State(IntEnum):
+    """Integer event codes in the transition lookup's row/column order."""
+
+    BEGIN = 0
+    MATCH = 1
+    INSERT = 2
+    DELETE = 3
 
 
 def log2sumexp2(values: Iterable[float]) -> float:
@@ -94,16 +103,18 @@ def _count_transitions(
     n_rows, width = encoded.shape
     occupied = encoded >= 0
     # Each row starts with its own Begin; -1 marks a cell that emits no event.
-    events = np.full((n_rows, width + 1), _BEGIN, dtype=np.int8)
+    events = np.full((n_rows, width + 1), State.BEGIN, dtype=np.int8)
     events[:, 1:] = np.where(
-        is_match, np.where(occupied, _MATCH, _DELETE), np.where(occupied, _INSERT, -1)
+        is_match,
+        np.where(occupied, State.MATCH, State.DELETE),
+        np.where(occupied, State.INSERT, -1),
     )
     flat = events.ravel()
     indices = np.flatnonzero(flat >= 0)
     kinds = flat[indices]
     slots = np.r_[0, positions][indices % (width + 1)]
     # Exclude the artificial edge from the end of one row to the next Begin.
-    within_row = kinds[1:] != _BEGIN
+    within_row = kinds[1:] != State.BEGIN
     types = _TRANSITION_TYPES[kinds[:-1][within_row], kinds[1:][within_row]]
     keys = N_TRANS * slots[:-1][within_row] + types
     n_slots = int(is_match.sum()) + 1
@@ -186,18 +197,18 @@ class ProfileHMM:
         if not rows:
             raise ValueError("Cannot build profile from empty MSA")
 
-        width = _alignment_width(rows)
+        width = alignment_width(rows)
         batch_rows = max(1, _MAX_BATCH_CELLS // max(width, 1))
         encoded = None
         if len(rows) <= batch_rows:
-            encoded = _encode_rows(rows)
+            encoded = encode_rows(rows)
             occupancy = np.count_nonzero(encoded >= 0, axis=0)
         else:
             # Column assignments must use all rows, not a mask per batch.
             occupancy = np.zeros(width, dtype=np.int64)
             for start in range(0, len(rows), batch_rows):
                 occupancy += np.count_nonzero(
-                    _encode_rows(rows[start : start + batch_rows]) >= 0, axis=0
+                    encode_rows(rows[start : start + batch_rows]) >= 0, axis=0
                 )
         is_match = occupancy / len(rows) >= symfrac
         K = int(is_match.sum())
@@ -211,7 +222,7 @@ class ProfileHMM:
             insert_counts = np.zeros((K + 1, N_AMINO_ACIDS), dtype=np.int64)
             trans_counts = np.zeros((K + 1, N_TRANS), dtype=np.int64)
             for start in range(0, len(rows), batch_rows):
-                batch = _encode_rows(rows[start : start + batch_rows])
+                batch = encode_rows(rows[start : start + batch_rows])
                 match, insert, trans = _count_profile(batch, is_match)
                 match_counts += match
                 insert_counts += insert

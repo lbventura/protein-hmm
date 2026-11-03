@@ -38,7 +38,7 @@ from typing import TextIO
 
 import numpy as np
 
-from .amino_acids import _encode_rows
+from .amino_acids import encode_rows
 
 
 @dataclass
@@ -92,6 +92,6 @@ def match_column_mask(rows: list[str], symfrac: float = 0.5) -> np.ndarray:
     """
     if not rows:
         return np.zeros(0, dtype=bool)
-    encoded = _encode_rows(rows)
+    encoded = encode_rows(rows)
     occupancy: np.ndarray = np.count_nonzero(encoded >= 0, axis=0)
     return occupancy / len(rows) >= symfrac

@@ -86,7 +86,7 @@ def is_residue(c: str) -> bool:
 _ASCII_INDEX = np.array([encode(chr(i)) for i in range(128)], dtype=np.int8)
 
 
-def _alignment_width(rows: list[str]) -> int:
+def alignment_width(rows: list[str]) -> int:
     """Validate rectangular rows before encoding or dividing them into batches."""
     width = len(rows[0]) if rows else 0
     if any(len(row) != width for row in rows):
@@ -94,9 +94,9 @@ def _alignment_width(rows: list[str]) -> int:
     return width
 
 
-def _encode_rows(rows: list[str]) -> npt.NDArray[np.int8]:
+def encode_rows(rows: list[str]) -> npt.NDArray[np.int8]:
     """Encode aligned rows once; preserve one column per input character."""
-    width = _alignment_width(rows)
+    width = alignment_width(rows)
     text = "".join(rows)
     if text.isascii():
         encoded = _ASCII_INDEX[np.frombuffer(text.encode("ascii"), dtype=np.uint8)]

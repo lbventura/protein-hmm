@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 import protein_profile_hmm.protein_profile_hmm as profile_module
-from protein_profile_hmm.amino_acids import AA_INDEX, BACKGROUND_FREQ, _encode_rows
+from protein_profile_hmm.amino_acids import AA_INDEX, BACKGROUND_FREQ, encode_rows
 from protein_profile_hmm.msa import MSA, match_column_mask, parse_stockholm
 from protein_profile_hmm.protein_profile_hmm import (
     N_TRANS,
@@ -71,7 +71,8 @@ def test_count_emissions_counts_only_selected_residues(
     n_slots: int,
     observations: list[tuple[int, str, int]],
 ) -> None:
-    counts = _count_emissions(_encode_rows(rows), np.array(columns), np.array(slots), n_slots)
+    encoded = encode_rows(rows)
+    counts = _count_emissions(encoded, np.array(columns), np.array(slots), n_slots)
     expected = np.zeros((n_slots, 20), dtype=np.int64)
     for slot, residue, count in observations:
         expected[slot, AA_INDEX[residue]] = count
@@ -143,7 +144,7 @@ def test_count_transitions_counts_row_paths_without_end_or_cross_row_edges(
     rows: list[str], columns: str, edges: list[tuple[int, int, int]]
 ) -> None:
     mask = np.array([column == "M" for column in columns])
-    counts = _count_transitions(_encode_rows(rows), mask, np.cumsum(mask, dtype=np.intp))
+    counts = _count_transitions(encode_rows(rows), mask, np.cumsum(mask, dtype=np.intp))
     expected = np.zeros((columns.count("M") + 1, N_TRANS), dtype=np.int64)
     for slot, transition, count in edges:
         expected[slot, transition] = count
@@ -152,7 +153,7 @@ def test_count_transitions_counts_row_paths_without_end_or_cross_row_edges(
 
 def test_count_profile_assigns_match_positions_and_boundary_insert_slots() -> None:
     # Paths: I0(G) -> M1(A) -> I1(Y); D1; M1(A).
-    encoded = _encode_rows(["GAY", "...", ".A."])
+    encoded = encode_rows(["GAY", "...", ".A."])
     match, insert, trans = _count_profile(encoded, np.array([False, True, False]))
     expected_match = np.zeros((1, 20), dtype=np.int64)
     expected_match[0, AA_INDEX["A"]] = 2
@@ -420,7 +421,7 @@ def test_emission_odds_use_the_requested_state_residue_and_background() -> None:
     assert hmm._insert_odds(2, c) == -3.0
 
 
-@pytest.mark.parametrize("seq, expected", [("", []), ("x-.?", []), ("aſßéıx", [0, 15, 7])])
+@pytest.mark.parametrize("seq, expected", [("", []), ("x-b.z", []), ("aXbzsi", [0, 15, 7])])
 def test_init_dp_handles_filtered_queries_and_single_match_profiles(
     seq: str, expected: list[int]
 ) -> None:
