@@ -90,7 +90,17 @@ def log2sumexp2(values: Iterable[float]) -> float:
 def _count_emissions(
     encoded: npt.NDArray[np.int8], columns: np.ndarray, slots: np.ndarray, n_slots: int
 ) -> npt.NDArray[np.int64]:
-    """Histogram (profile slot, residue) pairs without a one-hot array."""
+    """Count observed amino acids per match position or insert slot across rows.
+
+    ``columns`` selects either match or insert columns; ``slots`` maps each
+    selected alignment column to its output row. Match positions use indices
+    0..K-1; insert slots use 0..K, with slot 0 before the first match position.
+    Multiple insert columns in the same slot contribute to the same counts.
+
+    Each nonnegative encoded residue adds one to ``counts[slot, aa]``; gaps
+    and unsupported characters add nothing. Return an integer array of shape
+    ``(n_slots, N_AMINO_ACIDS)``, without pseudocounts or normalization.
+    """
     rows, cols = np.nonzero((encoded >= 0) & columns)
     keys = N_AMINO_ACIDS * slots[cols] + encoded[rows, cols]
     return np.bincount(keys, minlength=n_slots * N_AMINO_ACIDS).reshape(n_slots, N_AMINO_ACIDS)
@@ -99,7 +109,21 @@ def _count_emissions(
 def _count_transitions(
     encoded: npt.NDArray[np.int8], is_match: np.ndarray, positions: np.ndarray
 ) -> npt.NDArray[np.int64]:
-    """Count adjacent state events, skipping gaps only in insert columns."""
+    """Count transitions along each alignment row's Begin/Match/Insert/Delete path.
+
+    In match columns, residues become Match states and gaps or unsupported
+    characters become Delete states. In insert columns, residues become Insert
+    states; other cells are skipped, connecting the states on either side.
+    Each row starts at Begin, and transitions never cross between rows.
+
+    ``positions`` gives the cumulative number of match columns. Each adjacent
+    state pair adds one to ``counts[source_slot, T_*]``, using slot 0 for Begin.
+    Preserve the builder's conventions: B->I0 counts as T_MI, I->D as T_IM,
+    and D->I as T_DM. No transition to End is counted.
+
+    Return raw integer counts of shape ``(K + 1, N_TRANS)``, without
+    pseudocounts or normalization; K is the number of match columns.
+    """
     n_rows, width = encoded.shape
     occupied = encoded >= 0
     # Each row starts with its own Begin; -1 marks a cell that emits no event.

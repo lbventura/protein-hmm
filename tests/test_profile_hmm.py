@@ -54,100 +54,182 @@ def test_log2sumexp2_empty_returns_neg_inf() -> None:
     assert log2sumexp2([]) == NEG_INF
 
 
-@pytest.mark.parametrize(
-    ("rows", "columns", "slots", "n_slots", "observations"),
-    [
-        (["AAA", "A.-"], [True, False, True], [0, 99, 0], 2, [(0, "A", 3)]),
-        (["A-", "-C"], [False, False], [0, 1], 2, []),
-        (["--", ".."], [True, True], [0, 1], 2, []),
-        (["AY", "AY"], [True, True], [0, 129], 130, [(0, "A", 2), (129, "Y", 2)]),
-    ],
-    ids=["repeated-selected-bins", "no-selected-columns", "only-gaps", "wide-slot-index"],
-)
-def test_count_emissions_counts_only_selected_residues(
-    rows: list[str],
-    columns: list[bool],
-    slots: list[int],
-    n_slots: int,
-    observations: list[tuple[int, str, int]],
-) -> None:
-    encoded = encode_rows(rows)
-    counts = _count_emissions(encoded, np.array(columns), np.array(slots), n_slots)
-    expected = np.zeros((n_slots, 20), dtype=np.int64)
-    for slot, residue, count in observations:
-        expected[slot, AA_INDEX[residue]] = count
+def test_count_emissions_counts_two_match_positions() -> None:
+    # AC and AA: the first column uses slot 0, the second uses slot 1.
+    encoded = encode_rows(["AC", "AA"])
+    columns = np.array([True, True])
+    slots = np.array([0, 1])
+
+    counts = _count_emissions(encoded, columns, slots, n_slots=2)
+
+    expected = np.zeros((2, 20), dtype=np.int64)
+    expected[0, AA_INDEX["A"]] = 2
+    expected[1, [AA_INDEX["A"], AA_INDEX["C"]]] = 1
     np.testing.assert_array_equal(counts, expected)
     assert np.issubdtype(counts.dtype, np.integer)
 
 
+def test_count_emissions_ignores_unselected_columns_and_gaps() -> None:
+    encoded = encode_rows(["AGC", "C-."])
+    columns = np.array([True, False, True])
+    slots = np.array([0, 0, 1])
+
+    counts = _count_emissions(encoded, columns, slots, n_slots=2)
+
+    # G is in an unselected column; the final dot contributes no residue.
+    expected = np.zeros((2, 20), dtype=np.int64)
+    expected[0, [AA_INDEX["A"], AA_INDEX["C"]]] = 1
+    expected[1, AA_INDEX["C"]] = 1
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_emissions_combines_insert_columns_in_one_slot() -> None:
+    encoded = encode_rows(["AGGC", "A..C", "A..C"])
+    columns = np.array([False, True, True, False])
+    slots = np.array([0, 1, 1, 2])
+
+    counts = _count_emissions(encoded, columns, slots, n_slots=3)
+
+    # Both G residues belong to I1; unused boundary slots remain zero.
+    expected = np.zeros((3, 20), dtype=np.int64)
+    expected[1, AA_INDEX["G"]] = 2
+    np.testing.assert_array_equal(counts, expected)
+
+
 @pytest.mark.parametrize(
-    ("rows", "columns", "edges"),
-    [
-        # M1 -> I1 -> I1 -> M2 -> M3; M1 -> M2 -> M3; M1 -> D2 -> M3.
-        (
-            ["AGGCE", "A..CE", "A...E"],
-            "M..MM",
-            [
-                (0, T_BM, 3),
-                (1, T_MI, 1),
-                (1, T_II, 1),
-                (1, T_IM, 1),
-                (1, T_MM, 1),
-                (1, T_MD, 1),
-                (2, T_MM, 2),
-                (2, T_DM, 1),
-            ],
-        ),
-        # Leading/trailing insert loops; empty insert columns preserve predecessors.
-        (
-            ["GGA..CYY", "..A..C..", ".....C.."],
-            "..M..M..",
-            [
-                (0, T_MI, 1),
-                (0, T_II, 1),
-                (0, T_IM, 1),
-                (0, T_BM, 1),
-                (0, T_BD, 1),
-                (1, T_MM, 2),
-                (1, T_DM, 1),
-                (2, T_MI, 1),
-                (2, T_II, 1),
-            ],
-        ),
-        # I1 -> D2 folds into IM; D2 -> D3 extends the deletion chain.
-        (
-            ["AGG..E", "A..CGE"],
-            "M..MMM",
-            [
-                (0, T_BM, 2),
-                (1, T_MI, 1),
-                (1, T_II, 1),
-                (1, T_IM, 1),
-                (1, T_MM, 1),
-                (2, T_DD, 1),
-                (2, T_MM, 1),
-                (3, T_DM, 1),
-                (3, T_MM, 1),
-            ],
-        ),
-        # D2 -> I2 folds into DM, followed by a terminal insert loop.
-        (
-            ["A.GG", "AC.."],
-            "MM..",
-            [(0, T_BM, 2), (1, T_MD, 1), (1, T_MM, 1), (2, T_DM, 1), (2, T_II, 1)],
-        ),
-        ([".", "A", "-"], "M", [(0, T_BM, 1), (0, T_BD, 2)]),
-    ],
-    ids=["internal-paths", "boundary-inserts", "insert-delete-chain", "delete-insert", "K1"],
+    ("rows", "columns"),
+    [(["A-", "-C"], [False, False]), (["--", ".."], [True, True])],
+    ids=["no-selected-columns", "only-gaps"],
 )
-def test_count_transitions_counts_row_paths_without_end_or_cross_row_edges(
-    rows: list[str], columns: str, edges: list[tuple[int, int, int]]
+def test_count_emissions_returns_zero_counts_without_selected_residues(
+    rows: list[str], columns: list[bool]
 ) -> None:
-    mask = np.array([column == "M" for column in columns])
-    counts = _count_transitions(encode_rows(rows), mask, np.cumsum(mask, dtype=np.intp))
-    expected = np.zeros((columns.count("M") + 1, N_TRANS), dtype=np.int64)
-    for slot, transition, count in edges:
-        expected[slot, transition] = count
+    counts = _count_emissions(encode_rows(rows), np.array(columns), np.array([0, 1]), n_slots=2)
+    np.testing.assert_array_equal(counts, np.zeros((2, 20), dtype=np.int64))
+
+
+def test_count_emissions_handles_slots_beyond_the_residue_dtype_range() -> None:
+    encoded = encode_rows(["AY", "AY"])
+    columns = np.array([True, True])
+    slots = np.array([0, 129])
+
+    counts = _count_emissions(encoded, columns, slots, n_slots=130)
+
+    expected = np.zeros((130, 20), dtype=np.int64)
+    expected[0, AA_INDEX["A"]] = 2
+    expected[129, AA_INDEX["Y"]] = 2
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_transitions_counts_matches_and_deletions_within_each_row() -> None:
+    # AC: B -> M1 -> M2; A.: B -> M1 -> D2.
+    encoded = encode_rows(["AC", "A."])
+    is_match = np.array([True, True])
+    positions = np.array([1, 2])
+
+    counts = _count_transitions(encoded, is_match, positions)
+
+    # No transition joins the rows or leaves the final state for End.
+    expected = np.zeros((3, N_TRANS), dtype=np.int64)
+    expected[0, T_BM] = 2
+    expected[1, [T_MM, T_MD]] = 1
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_transitions_skips_insert_gaps_and_counts_insert_loops() -> None:
+    # AGGC: B -> M1 -> I1 -> I1 -> M2.
+    # A..C: B -> M1 -> M2; A...: B -> M1 -> D2.
+    encoded = encode_rows(["AGGC", "A..C", "A..."])
+    is_match = np.array([True, False, False, True])
+    positions = np.array([1, 1, 1, 2])
+
+    counts = _count_transitions(encoded, is_match, positions)
+
+    expected = np.zeros((3, N_TRANS), dtype=np.int64)
+    expected[0, T_BM] = 3
+    expected[1, [T_MI, T_II, T_IM, T_MM, T_MD]] = 1
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_transitions_folds_delete_to_insert_into_delete_to_match() -> None:
+    # A.GC: B -> M1 -> D2 -> I2 -> M3.
+    # Both AC.C rows: B -> M1 -> M2 -> M3.
+    encoded = encode_rows(["A.GC", "AC.C", "AC.C"])
+    is_match = np.array([True, True, False, True])
+    positions = np.array([1, 2, 2, 3])
+
+    counts = _count_transitions(encoded, is_match, positions)
+
+    expected = np.zeros((4, N_TRANS), dtype=np.int64)
+    expected[0, T_BM] = 3
+    expected[1, T_MD] = 1
+    expected[1, T_MM] = 2
+    expected[2, T_DM] = 1  # D2 -> I2 uses the existing DM counting rule.
+    expected[2, T_IM] = 1
+    expected[2, T_MM] = 2
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_transitions_counts_leading_and_trailing_insert_loops() -> None:
+    # GGA..CYY: B -> I0 -> I0 -> M1 -> M2 -> I2 -> I2.
+    # ..A..C..: B -> M1 -> M2; .....C..: B -> D1 -> M2.
+    encoded = encode_rows(["GGA..CYY", "..A..C..", ".....C.."])
+    is_match = np.array([False, False, True, False, False, True, False, False])
+    positions = np.array([0, 0, 1, 1, 1, 2, 2, 2])
+
+    counts = _count_transitions(encoded, is_match, positions)
+
+    expected = np.zeros((3, N_TRANS), dtype=np.int64)
+    expected[0, [T_MI, T_II, T_IM, T_BM, T_BD]] = 1
+    expected[1, T_MM] = 2
+    expected[1, T_DM] = 1
+    expected[2, [T_MI, T_II]] = 1
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_transitions_folds_insert_to_delete_and_counts_deletion_chains() -> None:
+    # AGG..E: B -> M1 -> I1 -> I1 -> D2 -> D3 -> M4.
+    # A..CGE: B -> M1 -> M2 -> M3 -> M4.
+    encoded = encode_rows(["AGG..E", "A..CGE"])
+    is_match = np.array([True, False, False, True, True, True])
+    positions = np.array([1, 1, 1, 2, 3, 4])
+
+    counts = _count_transitions(encoded, is_match, positions)
+
+    expected = np.zeros((5, N_TRANS), dtype=np.int64)
+    expected[0, T_BM] = 2
+    expected[1, [T_MI, T_II, T_IM, T_MM]] = 1  # I1 -> D2 counts as IM.
+    expected[2, [T_DD, T_MM]] = 1
+    expected[3, [T_DM, T_MM]] = 1
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_transitions_counts_inserts_after_the_last_match_is_deleted() -> None:
+    # A.GG: B -> M1 -> D2 -> I2 -> I2; AC..: B -> M1 -> M2.
+    encoded = encode_rows(["A.GG", "AC.."])
+    is_match = np.array([True, True, False, False])
+    positions = np.array([1, 2, 2, 2])
+
+    counts = _count_transitions(encoded, is_match, positions)
+
+    expected = np.zeros((3, N_TRANS), dtype=np.int64)
+    expected[0, T_BM] = 2
+    expected[1, [T_MD, T_MM]] = 1
+    expected[2, [T_DM, T_II]] = 1
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_transitions_handles_a_single_match_position() -> None:
+    # Two rows take B -> D1; the middle row takes B -> M1.
+    encoded = encode_rows([".", "A", "-"])
+    is_match = np.array([True])
+    positions = np.array([1])
+
+    counts = _count_transitions(encoded, is_match, positions)
+
+    expected = np.zeros((2, N_TRANS), dtype=np.int64)
+    expected[0, T_BM] = 1
+    expected[0, T_BD] = 2
     np.testing.assert_array_equal(counts, expected)
 
 
