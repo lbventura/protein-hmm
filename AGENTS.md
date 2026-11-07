@@ -21,7 +21,7 @@ Keep code in the layer that owns its behavior. Avoid duplicating model or parsin
 
 ## Code changes
 
-- For code changes, create a clear and concise Markdown implementation plan in `implementation_plans/` under the name `<date>-<issue, if any>-<description>-implementation_plan.md`, including verification steps. Reference any relevant issues or previous PRs.
+- For MAJOR code changes, create a clear and concise Markdown implementation plan in `implementation_plans/` under the name `<date>-<issue, if any>-<description>-implementation_plan.md`, including verification steps. Reference any relevant issues or previous PRs. Do not create it if the task is trivial (changing a docstring, adding a test, etc.).
 - Follow the surrounding code's naming, formatting, and dependency patterns. Use type hints for public functions and meaningful return values.
 - Keep functions focused; use names that explain domain intent. Add comments only when they explain a non-obvious reason or constraint.
 - Handle expected failure cases at the boundary that can respond usefully. Let unexpected errors retain their original traceback; do not catch broad exceptions just to log and continue.
@@ -37,6 +37,7 @@ Keep code in the layer that owns its behavior. Avoid duplicating model or parsin
 - When asked to verify a change, run the narrowest relevant checks first. Tests use the checked-in datasets in `data/`.
 - Use the `protein-hmm` Micromamba environment defined in `environment.yml`. From the repository root, run `micromamba run -n protein-hmm pytest tests` and `micromamba run -n protein-hmm pre-commit run --all-files`.
 - Do not change unrelated tests or generated data as part of an implementation.
+- Do not run tests if the task only involves documentation, comments, or other non-functional changes.
 
 ## Contributions
 
