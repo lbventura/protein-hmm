@@ -79,3 +79,36 @@ The G residues both add one to insertion slot 1's G count. The second row contri
 HMMER also selects match columns, derives training traces, and counts those traces into an HMM. Its `matassign2hmm` routine calls `p7_trace_FauxFromMSA`, then repairs and validates the traces before calling `p7_trace_Count`. See the pinned upstream [model builder](https://github.com/EddyRivasLab/hmmer/blob/9acd8b6758a0ca5d21db6d167e0277484341929b/src/build.c) and [trace implementation](https://github.com/EddyRivasLab/hmmer/blob/9acd8b6758a0ca5d21db6d167e0277484341929b/src/p7_trace.c).
 
 Here, `_trace_alignment` provides the path-construction stage, and `_count_emissions`/`_count_transitions` provide the counting stage. This is a structural correspondence: the current teaching model still folds I -> D into IM and D -> I into DM instead of repairing the path as HMMER does. It also retains its existing Begin/terminal normalization, fixed insertion prior, and absence of explicit End transitions. Those rules are visible in `_TRANSITION_TYPES`, `_normalise_transitions`, and `build_from_msa`; changing them requires coordinated counting and scoring changes.
+
+## Following query scoring
+
+Both scorers consume one query residue at a time. `_init_score_rows` encodes the
+query, starts Begin at zero, and fills the leading deletion path. Each row has
+K+1 entries: Match/Delete positions 1..K and Insert slots 0..K.
+
+For each residue, `_viterbi_row` or `_forward_row` performs three updates:
+
+1. Match scores read the previous row's M/I/D predecessors. M1 uses Begin or
+   I0 explicitly; positions M2..MK are computed together with array operations.
+2. Insert scores read the previous row's M/I scores at the same slot. These
+   updates also run across all positions together.
+3. Delete scores advance from left to right in the current row. D_k needs the
+   newly computed D_(k-1), so this sweep remains ordered.
+
+Viterbi selects the highest candidate score. Forward sums path weights using
+`np.logaddexp2`, preserving base-2 units and the unreachable-state checks.
+Both return a scalar score after combining M_K, I_K, and D_K.
+
+For example:
+
+```python
+from protein_profile_hmm.msa import MSA
+from protein_profile_hmm.protein_profile_hmm import ProfileHMM
+
+msa = MSA(names=["s1", "s2", "s3"], rows=["AGGCE", "A..CE", "A...E"])
+profile = ProfileHMM.build_from_msa(msa)
+print(f"{profile.viterbi('AAAA'):.3f}")  # -2.181 bits
+```
+
+See [first-residue walkthrough](viterbi_first_residue_walkthrough.md) and its
+follow-ups for a thorough step-by-step explanation of this example.

@@ -10,9 +10,8 @@ aa = x[i - 1]  # x[1] = 0, encoding the second A
 ```
 
 `i` counts query residues consumed; `k` identifies the profile position.
-The inner loop visits `k = 0, 1, 2, 3`. Match and insert updates read row
-`i - 1 = 1` and consume the second A. Delete updates read the current row
-`i = 2` and consume nothing.
+Match and Insert updates read row `i - 1 = 1` and consume the second A.
+Delete updates read the current row `i = 2` and consume nothing.
 
 ## Continuing from the first iteration
 

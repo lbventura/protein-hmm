@@ -16,8 +16,6 @@ aa = x[i - 1]  # x[3] = 0, encoding the fourth A
 `L = 4` is the query length and `K = 3` is the number of profile match positions.
 Match and insert updates read dynamic-programming row `i - 1 = 3` and consume the fourth A.
 Delete updates read the current dynamic-programming row `i = 4` and consume nothing.
-After visiting `k = 0, 1, 2, 3`, the code compares the complete paths ending
-at profile position `K = 3` and returns the highest score.
 
 ## Continuing from the third iteration
 
@@ -483,7 +481,7 @@ Query assignment:   first A, second A   third A   fourth A   gap (D3)
 | `Id[4, k]` | -3 | -2.567 | -4.532 | -2.181 |
 | `D[4, k]` | NEG_INF | NEG_INF | -3.430 | -5.015 |
 
-The code now evaluates:
+In the conceptual table notation, termination evaluates:
 
 ```text
 terminal = max(M[L, K], Id[L, K], D[L, K])
