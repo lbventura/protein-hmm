@@ -87,75 +87,255 @@ def log2sumexp2(values: Iterable[float]) -> float:
     return m + float(np.log2(np.sum(2.0 ** (arr - m))))
 
 
-def _count_emissions(
-    encoded: npt.NDArray[np.int8], columns: np.ndarray, slots: np.ndarray, n_slots: int
-) -> npt.NDArray[np.int64]:
-    """Count observed amino acids per match position or insert slot across rows.
+@dataclass
+class AlignmentTrace:
+    """Ordered training paths, stored as parallel arrays with one entry per event.
 
-    ``columns`` selects either match or insert columns; ``slots`` maps each
-    selected alignment column to its output row. Match positions use indices
-    0..K-1; insert slots use 0..K, with slot 0 before the first match position.
-    Multiple insert columns in the same slot contribute to the same counts.
-
-    Each nonnegative encoded residue adds one to ``counts[slot, aa]``; gaps
-    and unsupported characters add nothing. Return an integer array of shape
-    ``(n_slots, N_AMINO_ACIDS)``, without pseudocounts or normalization.
+    Each sequence starts with Begin at position 0. Match/Delete positions are
+    1..K; Insert positions are 0..K. Only Match and Insert emit a residue;
+    Begin and Delete carry -1. Insert-column gaps produce no event.
+    Sequence indices refer to rows within the current batch.
     """
-    rows, cols = np.nonzero((encoded >= 0) & columns)
-    keys = N_AMINO_ACIDS * slots[cols] + encoded[rows, cols]
-    return np.bincount(keys, minlength=n_slots * N_AMINO_ACIDS).reshape(n_slots, N_AMINO_ACIDS)
+
+    sequence: npt.NDArray[np.intp]
+    state: npt.NDArray[np.int8]
+    position: npt.NDArray[np.intp]
+    residue: npt.NDArray[np.int8]
 
 
-def _count_transitions(
-    encoded: npt.NDArray[np.int8], is_match: np.ndarray, positions: np.ndarray
-) -> npt.NDArray[np.int64]:
-    """Count transitions along each alignment row's Begin/Match/Insert/Delete path.
+def _trace_alignment(encoded: npt.NDArray[np.int8], is_match: np.ndarray) -> AlignmentTrace:
+    """Turn alignment cells into ordered B/M/I/D paths for a batch of rows.
 
-    In match columns, residues become Match states and gaps or unsupported
-    characters become Delete states. In insert columns, residues become Insert
-    states; other cells are skipped, connecting the states on either side.
-    Each row starts at Begin, and transitions never cross between rows.
+    Example:
 
-    ``positions`` gives the cumulative number of match columns. Each adjacent
-    state pair adds one to ``counts[source_slot, T_*]``, using slot 0 for Begin.
-    Preserve the builder's conventions: B->I0 counts as T_MI, I->D as T_IM,
-    and D->I as T_DM. No transition to End is counted.
+        encoded = encode_rows(["AGGC", "A..C", "A..."])
+        is_match = np.array([True, False, False, True])
+        trace = _trace_alignment(encoded, is_match)
 
-    Return raw integer counts of shape ``(K + 1, N_TRANS)``, without
-    pseudocounts or normalization; K is the number of match columns.
+    The alignment rows produce these paths, with one event per visited state:
+
+        Row 1: AGGC -> B -> M1(A) -> I1(G) -> I1(G) -> M2(C)
+        Row 2: A..C -> B -> M1(A) --------------------> M2(C)
+        Row 3: A... -> B -> M1(A) --------------------> D2
+
+    The returned AlignmentTrace stores these events in four parallel arrays.
+    The first five entries describe Row 1's path, the next three describe
+    Row 2's path, and the final three describe Row 3's path:
+
+        sequence: [0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2]
+        state:    [0, 1, 2, 2, 1, 0, 1, 1, 0, 1, 3]
+        position: [0, 1, 1, 1, 2, 0, 1, 2, 0, 1, 2]
+        residue:  [-1, 0, 5, 5, 1, -1, 0, 1, -1, 0, -1]
+
+    At any index, sequence identifies the input row (0, 1, or 2); state
+    records B=0, M=1, I=2, or D=3; position records the number after M/I/D
+    in the path, or 0 for B. The residue is its AA_INDEX code (A=0, G=5,
+    C=1), or -1 for the non-emitting B and D states.
+
+    For example, Row 1's first I1(G) is at index 2: reading that index
+    across the arrays gives (sequence, state, position, residue) =
+    (0, 2, 1, 5). The second I1(G) gives the same values at index 3.
+    Insert-column gaps in Rows 2 and 3 produce no events. Row 3's final
+    D2 is the last entry, (2, 3, 2, -1): it skips match position 2 without
+    emitting a residue.
     """
-    n_rows, width = encoded.shape
-    occupied = encoded >= 0
-    # Each row starts with its own Begin; -1 marks a cell that emits no event.
-    events = np.full((n_rows, width + 1), State.BEGIN, dtype=np.int8)
-    events[:, 1:] = np.where(
-        is_match,
-        np.where(occupied, State.MATCH, State.DELETE),
-        np.where(occupied, State.INSERT, -1),
+    n_sequences, n_columns = encoded.shape
+    has_residue = encoded >= 0
+    states = np.empty((n_sequences, n_columns + 1), dtype=np.int8)
+    states[:, 0] = State.BEGIN
+    # A residue visits M or I; a gap visits D or produces no event (-1).
+    residue_states = np.where(is_match, State.MATCH, State.INSERT).astype(np.int8)
+    gap_states = np.where(is_match, State.DELETE, -1).astype(np.int8)
+    states[:, 1:] = np.where(has_residue, residue_states, gap_states)
+
+    residues = np.full_like(states, -1)
+    residues[:, 1:] = encoded
+    # In M1 I1 I1 M2, cumulative match counts give positions 1, 1, 1, 2.
+    positions = np.concatenate(([0], np.cumsum(is_match, dtype=np.intp)))
+
+    # nonzero visits each row in alignment order and omits insert-column gaps.
+    sequence, column = np.nonzero(states >= 0)
+    return AlignmentTrace(
+        sequence=sequence,
+        state=states[sequence, column],
+        position=positions[column],
+        residue=residues[sequence, column],
     )
-    flat = events.ravel()
-    indices = np.flatnonzero(flat >= 0)
-    kinds = flat[indices]
-    slots = np.r_[0, positions][indices % (width + 1)]
-    # Exclude the artificial edge from the end of one row to the next Begin.
-    within_row = kinds[1:] != State.BEGIN
-    types = _TRANSITION_TYPES[kinds[:-1][within_row], kinds[1:][within_row]]
-    keys = N_TRANS * slots[:-1][within_row] + types
-    n_slots = int(is_match.sum()) + 1
-    return np.bincount(keys, minlength=n_slots * N_TRANS).reshape(n_slots, N_TRANS)
+
+
+def _count_emissions(trace: AlignmentTrace, state: State, n_slots: int) -> npt.NDArray[np.int64]:
+    """Count residues emitted by Match or Insert states, without priors.
+
+    Match position k occupies emission row k-1; insertion slot k occupies
+    row k. Repeated visits to an insert slot contribute separate observations.
+
+    For example, select both columns of ["AC", "A."] as match positions:
+
+        encoded = encode_rows(["AC", "A."])
+        trace = _trace_alignment(encoded, np.array([True, True]))
+        counts = _count_emissions(trace, State.MATCH, n_slots=2)
+
+    Corresponding to the following paths:
+
+        Row 1: AC -> B -> M1(A) -> M2(C)
+        Row 2: A. -> B -> M1(A) -> D2
+
+    The result has shape (2, 20), with only these nonzero entries:
+
+        counts[0, AA_INDEX["A"]] == 2  # Both rows emit A at M1.
+        counts[1, AA_INDEX["C"]] == 1  # Only Row 1 emits C at M2.
+
+    B and D2 emit nothing. For the same trace,
+    _count_emissions(trace, State.INSERT, n_slots=3) returns a (3, 20)
+    array of zeros as neither path visits I0, I1, or I2.
+    """
+    emits = trace.state == state
+    slots = trace.position[emits]
+    if state == State.MATCH:
+        slots = slots - 1
+    residues = trace.residue[emits]
+    counts = np.zeros((n_slots, N_AMINO_ACIDS), dtype=np.int64)
+    # add.at accumulates repeated (slot, residue) pairs instead of overwriting.
+    np.add.at(counts, (slots, residues), 1)
+    return counts
+
+
+def _count_transitions(trace: AlignmentTrace, n_slots: int) -> npt.NDArray[np.int64]:
+    """Count consecutive states within each training path, without priors.
+
+    Keep the current counting conventions: B->I0 uses T_MI, I->D uses T_IM,
+    and D->I uses T_DM. No End event or transition is added to the trace.
+
+    For example, select both columns of ["AC", "A."] as match positions:
+
+        encoded = encode_rows(["AC", "A."])
+        trace = _trace_alignment(encoded, np.array([True, True]))
+        counts = _count_transitions(trace, n_slots=3)
+
+    Corresponding to the following paths:
+
+        Row 1: AC -> B -> M1(A) -> M2(C)
+        Row 2: A. -> B -> M1(A) -> D2
+
+    This function counts the transitions between consecutive states in each path.
+    The result has shape (3, N_TRANS). Rows identify source positions
+    0, 1, and 2; columns identify transition types. Only three entries
+    are nonzero:
+
+        counts[0, T_BM] == 2  # B -> M1 in both rows.
+        counts[1, T_MM] == 1  # M1 -> M2 in Row 1.
+        counts[1, T_MD] == 1  # M1 -> D2 in Row 2.
+
+    Neither M2 nor D2 has an outgoing transition to End; the counts at source position 2 stay zero.
+    """
+    same_sequence = trace.sequence[:-1] == trace.sequence[1:]
+    source_state = trace.state[:-1][same_sequence]
+    destination_state = trace.state[1:][same_sequence]
+    source_position = trace.position[:-1][same_sequence]
+    transition = _TRANSITION_TYPES[source_state, destination_state]
+
+    counts = np.zeros((n_slots, N_TRANS), dtype=np.int64)
+    np.add.at(counts, (source_position, transition), 1)
+    return counts
 
 
 def _count_profile(
     encoded: npt.NDArray[np.int8], is_match: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return observed match, insert, and transition counts without priors."""
-    positions = np.cumsum(is_match, dtype=np.intp)
+    """Count match emissions, insert emissions, and transitions from one trace.
+
+    K is the number of alignment columns selected as match positions. For
+    example, with is_match = [True, False, False, True]:
+
+        A  G  G  C
+        A  .  .  C
+        A  .  .  C
+        M1 I1 I1 M2
+
+    These four columns give K=2 match positions: M1 counts three A residues,
+    and M2 counts three C residues. Both insert columns contribute to I1,
+    which counts two G residues.
+
+    Insertions can occur before, between, and after the match positions:
+
+        I0  M1  I1  M2  I2
+
+    Match emission counts have K rows (M1..MK); insert emission counts have
+    K+1 rows (I0..IK). Each emission-count row has one column per amino acid.
+    """
+    trace = _trace_alignment(encoded, is_match)
     K = int(is_match.sum())
     return (
-        _count_emissions(encoded, is_match, positions - 1, K),
-        _count_emissions(encoded, ~is_match, positions, K + 1),
-        _count_transitions(encoded, is_match, positions),
+        _count_emissions(trace, State.MATCH, K),
+        _count_emissions(trace, State.INSERT, K + 1),
+        _count_transitions(trace, K + 1),
     )
+
+
+def _count_alignment(rows: list[str], symfrac: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Select global match columns, then collect raw counts in bounded batches.
+
+    Example:
+
+        match, insert, trans = _count_alignment(["AC", "A."], symfrac=0.5)
+
+    Encoding gives [[0, 1], [0, -1]], where A=0, C=1, and the gap is -1.
+    Counting residues in each column gives occupancy = [2, 1]. Dividing
+    by the two input rows gives [1.0, 0.5]; both fractions meet the >= 0.5
+    threshold, so is_match = [True, True] and K=2.
+
+    The encoded alignment is reused in _count_profile(encoded, is_match),
+    which counts these paths:
+
+        Row 1: AC -> B -> M1(A) -> M2(C)
+        Row 2: A. -> B -> M1(A) -> D2
+
+    The returned arrays contain raw counts.
+    Match counts have shape (2, 20), insert counts have
+    shape (3, 20), and transition counts have shape (3, N_TRANS). Their
+    only nonzero entries are:
+
+        match[0, AA_INDEX["A"]] == 2  # Both rows emit A at M1.
+        match[1, AA_INDEX["C"]] == 1  # Row 1 emits C at M2.
+        trans[0, T_BM] == 2          # B -> M1 in both rows.
+        trans[1, T_MM] == 1          # M1 -> M2 in Row 1.
+        trans[1, T_MD] == 1          # M1 -> D2 in Row 2.
+
+    All insert counts are zero because neither path visits an insert state.
+    """
+    if not rows:
+        raise ValueError("Cannot build profile from empty MSA")
+    width = alignment_width(rows)
+    batch_rows = max(1, _MAX_BATCH_CELLS // max(width, 1))
+
+    # Every batch must use the same column assignments, derived from all rows.
+    encoded = None
+    if len(rows) <= batch_rows:
+        encoded = encode_rows(rows)
+        occupancy = np.count_nonzero(encoded >= 0, axis=0)
+    else:
+        occupancy = np.zeros(width, dtype=np.int64)
+        for start in range(0, len(rows), batch_rows):
+            batch = encode_rows(rows[start : start + batch_rows])
+            occupancy += np.count_nonzero(batch >= 0, axis=0)
+    is_match = occupancy / len(rows) >= symfrac
+    K = int(is_match.sum())
+    if K == 0:
+        raise ValueError("MSA has no match columns under symfrac")
+
+    if encoded is not None:
+        return _count_profile(encoded, is_match)
+
+    match_counts = np.zeros((K, N_AMINO_ACIDS), dtype=np.int64)
+    insert_counts = np.zeros((K + 1, N_AMINO_ACIDS), dtype=np.int64)
+    trans_counts = np.zeros((K + 1, N_TRANS), dtype=np.int64)
+    for start in range(0, len(rows), batch_rows):
+        batch = encode_rows(rows[start : start + batch_rows])
+        match, insert, trans = _count_profile(batch, is_match)
+        match_counts += match
+        insert_counts += insert
+        trans_counts += trans
+    return match_counts, insert_counts, trans_counts
 
 
 def _normalise_rows(counts: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
@@ -212,45 +392,14 @@ class ProfileHMM:
 
         Match columns are chosen by the symfrac rule; the remaining columns are
         treated as inserts attached to the nearest preceding match column.
-        Observations are counted with array histograms. Match emissions and
+        Each aligned sequence defines a training path; array operations count
+        the residues and transitions along those paths. Match emissions and
         transitions get ``pseudocount`` per cell; inserts get 20 background-
         weighted counts in total. Large alignments use row batches with one
         global match mask. Probabilities are stored in log2 space.
         """
-        rows = msa.rows
-        if not rows:
-            raise ValueError("Cannot build profile from empty MSA")
-
-        width = alignment_width(rows)
-        batch_rows = max(1, _MAX_BATCH_CELLS // max(width, 1))
-        encoded = None
-        if len(rows) <= batch_rows:
-            encoded = encode_rows(rows)
-            occupancy = np.count_nonzero(encoded >= 0, axis=0)
-        else:
-            # Column assignments must use all rows, not a mask per batch.
-            occupancy = np.zeros(width, dtype=np.int64)
-            for start in range(0, len(rows), batch_rows):
-                occupancy += np.count_nonzero(
-                    encode_rows(rows[start : start + batch_rows]) >= 0, axis=0
-                )
-        is_match = occupancy / len(rows) >= symfrac
-        K = int(is_match.sum())
-        if K == 0:
-            raise ValueError("MSA has no match columns under symfrac")
-
-        if encoded is not None:
-            match_counts, insert_counts, trans_counts = _count_profile(encoded, is_match)
-        else:
-            match_counts = np.zeros((K, N_AMINO_ACIDS), dtype=np.int64)
-            insert_counts = np.zeros((K + 1, N_AMINO_ACIDS), dtype=np.int64)
-            trans_counts = np.zeros((K + 1, N_TRANS), dtype=np.int64)
-            for start in range(0, len(rows), batch_rows):
-                batch = encode_rows(rows[start : start + batch_rows])
-                match, insert, trans = _count_profile(batch, is_match)
-                match_counts += match
-                insert_counts += insert
-                trans_counts += trans
+        match_counts, insert_counts, trans_counts = _count_alignment(msa.rows, symfrac)
+        K = len(match_counts)
 
         # Add priors once, after combining all batches. Inserts retain their
         # fixed total of 20 background-weighted counts, independent of pseudocount.
