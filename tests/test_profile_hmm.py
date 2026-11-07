@@ -5,9 +5,11 @@ from io import StringIO
 import numpy as np
 import pytest
 
-from protein_profile_hmm.amino_acids import AA_INDEX, BACKGROUND_FREQ
-from protein_profile_hmm.msa import match_column_mask, parse_stockholm
+import protein_profile_hmm.protein_profile_hmm as profile_module
+from protein_profile_hmm.amino_acids import AA_INDEX, BACKGROUND_FREQ, encode_rows
+from protein_profile_hmm.msa import MSA, match_column_mask, parse_stockholm
 from protein_profile_hmm.protein_profile_hmm import (
+    N_TRANS,
     NEG_INF,
     T_BD,
     T_BM,
@@ -19,6 +21,14 @@ from protein_profile_hmm.protein_profile_hmm import (
     T_MI,
     T_MM,
     ProfileHMM,
+    State,
+    _count_alignment,
+    _count_emissions,
+    _count_profile,
+    _count_transitions,
+    _normalise_rows,
+    _normalise_transitions,
+    _trace_alignment,
     log2sumexp2,
 )
 
@@ -47,6 +57,314 @@ def test_log2sumexp2_empty_returns_neg_inf() -> None:
     assert log2sumexp2([]) == NEG_INF
 
 
+def test_trace_alignment_records_states_positions_and_emitted_residues() -> None:
+    """Record each row's state path, omitting the walkthrough's final M3(E).
+
+    Row 1: AGGC -> B -> M1(A) -> I1(G) -> I1(G) -> M2(C)
+    Row 2: A..C -> B -> M1(A) --------------------> M2(C)
+    Row 3: A... -> B -> M1(A) --------------------> D2
+
+    Each expected tuple is (zero-based row index, state, profile position,
+    encoded residue). Begin uses position 0; Match and Delete use positions
+    1 and 2. Both G residues visit insert slot 1, producing separate events.
+    Gaps in insert columns produce no events, while the final match-column
+    gap in row 3 produces D2. Match and Insert emit AA_INDEX residues;
+    Begin and Delete emit nothing and carry residue -1.
+    """
+    trace = _trace_alignment(
+        encode_rows(["AGGC", "A..C", "A..."]), np.array([True, False, False, True])
+    )
+    assert list(zip(trace.sequence, trace.state, trace.position, trace.residue, strict=True)) == [
+        (0, State.BEGIN, 0, -1),
+        (0, State.MATCH, 1, AA_INDEX["A"]),
+        (0, State.INSERT, 1, AA_INDEX["G"]),
+        (0, State.INSERT, 1, AA_INDEX["G"]),
+        (0, State.MATCH, 2, AA_INDEX["C"]),
+        (1, State.BEGIN, 0, -1),
+        (1, State.MATCH, 1, AA_INDEX["A"]),
+        (1, State.MATCH, 2, AA_INDEX["C"]),
+        (2, State.BEGIN, 0, -1),
+        (2, State.MATCH, 1, AA_INDEX["A"]),
+        (2, State.DELETE, 2, -1),
+    ]
+
+
+def test_trace_alignment_keeps_begin_for_rows_with_no_state_events() -> None:
+    trace = _trace_alignment(encode_rows(["..", "--"]), np.array([False, False]))
+    assert trace.sequence.tolist() == [0, 1]
+    assert trace.state.tolist() == [State.BEGIN, State.BEGIN]
+    assert trace.position.tolist() == [0, 0]
+    assert trace.residue.tolist() == [-1, -1]
+    np.testing.assert_array_equal(_count_transitions(trace, n_slots=1), np.zeros((1, N_TRANS)))
+
+
+def test_count_emissions_counts_two_match_positions() -> None:
+    # AC and AA: the first column uses slot 0, the second uses slot 1.
+    encoded = encode_rows(["AC", "AA"])
+    is_match = np.array([True, True])
+    trace = _trace_alignment(encoded, is_match)
+
+    counts = _count_emissions(trace, State.MATCH, n_slots=2)
+
+    expected = np.zeros((2, 20), dtype=np.int64)
+    expected[0, AA_INDEX["A"]] = 2
+    expected[1, [AA_INDEX["A"], AA_INDEX["C"]]] = 1
+    np.testing.assert_array_equal(counts, expected)
+    assert np.issubdtype(counts.dtype, np.integer)
+
+
+def test_count_emissions_ignores_unselected_columns_and_gaps() -> None:
+    encoded = encode_rows(["AGC", "C-."])
+    is_match = np.array([True, False, True])
+    trace = _trace_alignment(encoded, is_match)
+
+    counts = _count_emissions(trace, State.MATCH, n_slots=2)
+
+    # G is in an unselected column; the final dot contributes no residue.
+    expected = np.zeros((2, 20), dtype=np.int64)
+    expected[0, [AA_INDEX["A"], AA_INDEX["C"]]] = 1
+    expected[1, AA_INDEX["C"]] = 1
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_emissions_combines_insert_columns_in_one_slot() -> None:
+    encoded = encode_rows(["AGGC", "A..C", "A..C"])
+    is_match = np.array([True, False, False, True])
+    trace = _trace_alignment(encoded, is_match)
+
+    counts = _count_emissions(trace, State.INSERT, n_slots=3)
+
+    # Both G residues belong to I1; unused boundary slots (I0, I2) remain zero.
+    expected = np.zeros((3, 20), dtype=np.int64)
+    expected[1, AA_INDEX["G"]] = 2
+    np.testing.assert_array_equal(counts, expected)
+
+
+@pytest.mark.parametrize(
+    ("rows", "columns"),
+    [(["A-", "-C"], [False, False]), (["--", ".."], [True, True])],
+    ids=["no-selected-columns", "only-gaps"],
+)
+def test_count_emissions_returns_zero_counts_without_selected_residues(
+    rows: list[str], columns: list[bool]
+) -> None:
+    trace = _trace_alignment(encode_rows(rows), np.array(columns))
+    counts = _count_emissions(trace, State.MATCH, n_slots=2)
+    np.testing.assert_array_equal(counts, np.zeros((2, 20), dtype=np.int64))
+
+
+def test_count_emissions_handles_slots_beyond_the_residue_dtype_range() -> None:
+    # A is at M1 and Y is at M130, with deletions between them.
+    encoded = encode_rows(["A" + "." * 128 + "Y"] * 2)
+    trace = _trace_alignment(encoded, np.ones(130, dtype=bool))
+
+    counts = _count_emissions(trace, State.MATCH, n_slots=130)
+
+    expected = np.zeros((130, 20), dtype=np.int64)
+    expected[0, AA_INDEX["A"]] = 2
+    expected[129, AA_INDEX["Y"]] = 2
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_transitions_counts_matches_and_deletions_within_each_row() -> None:
+    # AC: B -> M1 -> M2; A.: B -> M1 -> D2.
+    encoded = encode_rows(["AC", "A."])
+    is_match = np.array([True, True])
+    trace = _trace_alignment(encoded, is_match)
+
+    counts = _count_transitions(trace, n_slots=3)
+
+    expected = np.zeros((3, N_TRANS), dtype=np.int64)
+    expected[0, T_BM] = 2
+    expected[1, [T_MM, T_MD]] = 1
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_transitions_skips_insert_gaps_and_counts_insert_loops() -> None:
+    # AGGC: B -> M1 -> I1 -> I1 -> M2.
+    # A..C: B -> M1 -> M2; A...: B -> M1 -> D2.
+    encoded = encode_rows(["AGGC", "A..C", "A..."])
+    is_match = np.array([True, False, False, True])
+    trace = _trace_alignment(encoded, is_match)
+
+    counts = _count_transitions(trace, n_slots=3)
+
+    expected = np.zeros((3, N_TRANS), dtype=np.int64)
+    expected[0, T_BM] = 3
+    expected[1, [T_MI, T_II, T_IM, T_MM, T_MD]] = 1
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_transitions_folds_delete_to_insert_into_delete_to_match() -> None:
+    # A.GC: B -> M1 -> D2 -> I2 -> M3.
+    # Both AC.C rows: B -> M1 -> M2 -> M3.
+    encoded = encode_rows(["A.GC", "AC.C", "AC.C"])
+    is_match = np.array([True, True, False, True])
+    trace = _trace_alignment(encoded, is_match)
+
+    counts = _count_transitions(trace, n_slots=4)
+
+    expected = np.zeros((4, N_TRANS), dtype=np.int64)
+    expected[0, T_BM] = 3
+    expected[1, T_MD] = 1
+    expected[1, T_MM] = 2
+    expected[2, T_DM] = 1  # D2 -> I2 uses the existing DM counting rule.
+    expected[2, T_IM] = 1
+    expected[2, T_MM] = 2
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_transitions_counts_leading_and_trailing_insert_loops() -> None:
+    # GGA..CYY: B -> I0 -> I0 -> M1 -> M2 -> I2 -> I2.
+    # ..A..C..: B -> M1 -> M2; .....C..: B -> D1 -> M2.
+    encoded = encode_rows(["GGA..CYY", "..A..C..", ".....C.."])
+    is_match = np.array([False, False, True, False, False, True, False, False])
+    trace = _trace_alignment(encoded, is_match)
+
+    counts = _count_transitions(trace, n_slots=3)
+
+    expected = np.zeros((3, N_TRANS), dtype=np.int64)
+    expected[0, [T_MI, T_II, T_IM, T_BM, T_BD]] = 1
+    expected[1, T_MM] = 2
+    expected[1, T_DM] = 1
+    expected[2, [T_MI, T_II]] = 1
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_transitions_folds_insert_to_delete_and_counts_deletion_chains() -> None:
+    # AGG..E: B -> M1 -> I1 -> I1 -> D2 -> D3 -> M4.
+    # A..CGE: B -> M1 -> M2 -> M3 -> M4.
+    encoded = encode_rows(["AGG..E", "A..CGE"])
+    is_match = np.array([True, False, False, True, True, True])
+    trace = _trace_alignment(encoded, is_match)
+
+    counts = _count_transitions(trace, n_slots=5)
+
+    expected = np.zeros((5, N_TRANS), dtype=np.int64)
+    expected[0, T_BM] = 2
+    expected[1, [T_MI, T_II, T_IM, T_MM]] = 1  # I1 -> D2 counts as IM.
+    expected[2, [T_DD, T_MM]] = 1
+    expected[3, [T_DM, T_MM]] = 1
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_transitions_counts_inserts_after_the_last_match_is_deleted() -> None:
+    # A.GG: B -> M1 -> D2 -> I2 -> I2; AC..: B -> M1 -> M2.
+    encoded = encode_rows(["A.GG", "AC.."])
+    is_match = np.array([True, True, False, False])
+    trace = _trace_alignment(encoded, is_match)
+
+    counts = _count_transitions(trace, n_slots=3)
+
+    expected = np.zeros((3, N_TRANS), dtype=np.int64)
+    expected[0, T_BM] = 2
+    expected[1, [T_MD, T_MM]] = 1
+    expected[2, [T_DM, T_II]] = 1
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_transitions_handles_a_single_match_position() -> None:
+    # Two rows take B -> D1; the middle row takes B -> M1.
+    encoded = encode_rows([".", "A", "-"])
+    is_match = np.array([True])
+    trace = _trace_alignment(encoded, is_match)
+
+    counts = _count_transitions(trace, n_slots=2)
+
+    expected = np.zeros((2, N_TRANS), dtype=np.int64)
+    expected[0, T_BM] = 1
+    expected[0, T_BD] = 2
+    np.testing.assert_array_equal(counts, expected)
+
+
+def test_count_profile_assigns_match_positions_and_boundary_insert_slots() -> None:
+    # Paths: I0(G) -> M1(A) -> I1(Y); D1; M1(A).
+    encoded = encode_rows(["GAQ", "...", ".A."])
+    match, insert, trans = _count_profile(encoded, np.array([False, True, False]))
+    expected_match = np.zeros((1, 20), dtype=np.int64)
+    expected_match[0, AA_INDEX["A"]] = 2
+    expected_insert = np.zeros((2, 20), dtype=np.int64)
+    expected_insert[0, AA_INDEX["G"]] = 1
+    expected_insert[1, AA_INDEX["Q"]] = 1
+    expected_trans = np.zeros((2, N_TRANS), dtype=np.int64)
+    expected_trans[0, [T_MI, T_IM, T_BD, T_BM]] = 1
+    expected_trans[1, T_MI] = 1
+    np.testing.assert_array_equal(match, expected_match)
+    np.testing.assert_array_equal(insert, expected_insert)
+    np.testing.assert_array_equal(trans, expected_trans)
+
+
+def test_count_profile_accumulates_counts_beyond_the_residue_dtype_range() -> None:
+    # 150 paths insert two G residues at I1; another 150 go straight from M1 to M2.
+    encoded = encode_rows(["AGGC"] * 150 + ["A..C"] * 150)
+    match, insert, trans = _count_profile(encoded, np.array([True, False, False, True]))
+
+    expected_match = np.zeros((2, 20), dtype=np.int64)
+    expected_match[0, AA_INDEX["A"]] = 300
+    expected_match[1, AA_INDEX["C"]] = 300
+    expected_insert = np.zeros((3, 20), dtype=np.int64)
+    expected_insert[1, AA_INDEX["G"]] = 300
+    expected_trans = np.zeros((3, N_TRANS), dtype=np.int64)
+    expected_trans[0, T_BM] = 300
+    expected_trans[1, [T_MM, T_MI, T_II, T_IM]] = 150
+    np.testing.assert_array_equal(match, expected_match)
+    np.testing.assert_array_equal(insert, expected_insert)
+    np.testing.assert_array_equal(trans, expected_trans)
+
+
+@pytest.mark.parametrize("batch_cells", [1, 6, 250_000])
+def test_count_alignment_uses_one_global_mask_and_accumulates_raw_counts(
+    monkeypatch: pytest.MonkeyPatch, batch_cells: int
+) -> None:
+    # Global mask: I0, M1, I1. The first two rows alone would select all columns.
+    monkeypatch.setattr(profile_module, "_MAX_BATCH_CELLS", batch_cells)
+    match, insert, trans = _count_alignment(["GAQ", "...", ".A."], symfrac=0.5)
+    expected_match = np.zeros((1, 20), dtype=np.int64)
+    expected_match[0, AA_INDEX["A"]] = 2
+    expected_insert = np.zeros((2, 20), dtype=np.int64)
+    expected_insert[0, AA_INDEX["G"]] = 1
+    expected_insert[1, AA_INDEX["Q"]] = 1
+    expected_trans = np.zeros((2, N_TRANS), dtype=np.int64)
+    expected_trans[0, [T_MI, T_IM, T_BD, T_BM]] = 1
+    expected_trans[1, T_MI] = 1
+    np.testing.assert_array_equal(match, expected_match)
+    np.testing.assert_array_equal(insert, expected_insert)
+    np.testing.assert_array_equal(trans, expected_trans)
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_normalise_rows_handles_zero_and_small_counts_without_mutating_input(empty: bool) -> None:
+    counts = np.array([[1.0, 3.0], [0.0, 0.0], [1e-200, 3e-200]])
+    expected = np.array([[0.25, 0.75], [0.0, 0.0], [0.25, 0.75]])
+    if empty:
+        counts, expected = counts[:0], expected[:0]
+    original = counts.copy()
+    actual = _normalise_rows(counts)
+    np.testing.assert_allclose(actual, expected)
+    np.testing.assert_array_equal(counts, original)
+    assert actual.dtype == np.float64
+
+
+@pytest.mark.parametrize("K", [1, 3])
+@pytest.mark.parametrize("scale", [0.0, 1.0])
+def test_normalise_transitions_preserves_boundary_rules_and_unused_cells(
+    K: int, scale: float
+) -> None:
+    counts = np.tile([2.0, 3, 5, 7, 11, 13, 17, 19, 23], (K + 1, 1)) * scale
+    original = counts.copy()
+    expected = (
+        np.array(
+            [[2, 1, 5, 7 / 18, 11 / 18, 13, 17, 19 / 42, 23 / 42]]
+            + [[0.2, 0.3, 0.5, 7 / 18, 11 / 18, 13 / 30, 17 / 30, 19, 23]] * (K - 1)
+            + [[2, 1, 5, 7, 1, 13, 17, 19, 23]]
+        )
+        * scale
+    )
+    actual = _normalise_transitions(counts)
+    np.testing.assert_allclose(actual, expected)
+    np.testing.assert_array_equal(counts, original)
+
+
 def test_build_from_msa_picks_correct_number_of_match_columns() -> None:
     hmm = _build(["ACDE", "ACDE"], symfrac=0.5, pseudocount=1.0)
     assert hmm.K == 4
@@ -55,6 +373,44 @@ def test_build_from_msa_picks_correct_number_of_match_columns() -> None:
 def test_build_from_msa_treats_low_residue_columns_as_insert() -> None:
     hmm = _build(["AC.DE", "AC.DE", "AC.DE"], symfrac=0.5, pseudocount=1.0)
     assert hmm.K == 4
+
+
+@pytest.mark.parametrize("rows", [[], [""], ["...", "---"]])
+def test_build_from_msa_rejects_empty_or_no_match_alignment(rows: list[str]) -> None:
+    with pytest.raises(ValueError, match="empty MSA|no match columns"):
+        ProfileHMM.build_from_msa(MSA([], rows))
+
+
+def test_build_from_msa_batches_reject_no_match_columns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(profile_module, "_MAX_BATCH_CELLS", 1)
+    with pytest.raises(ValueError, match="no match columns"):
+        _build(["...", "---"])
+
+
+@pytest.mark.parametrize("batch_cells", [1, 250_000])
+def test_build_from_msa_handles_all_delete_paths_without_pseudocounts(
+    monkeypatch: pytest.MonkeyPatch, batch_cells: int
+) -> None:
+    monkeypatch.setattr(profile_module, "_MAX_BATCH_CELLS", batch_cells)
+    # At symfrac=0 even empty columns are match positions: both paths are B -> D1 -> D2.
+    hmm = _build(["..", "--"], symfrac=0.0, pseudocount=0.0)
+    assert hmm.K == 2
+    log_floor = np.log2(1e-300)
+    np.testing.assert_array_equal(hmm.log_match_emit, np.full((2, 20), log_floor))
+    np.testing.assert_allclose(hmm.log_insert_emit, np.tile(np.log2(BACKGROUND_FREQ), (3, 1)))
+    expected_trans = np.full((3, N_TRANS), log_floor)
+    expected_trans[0, T_BD] = 0.0
+    expected_trans[1, T_DD] = 0.0
+    np.testing.assert_array_equal(hmm.log_trans, expected_trans)
+
+
+@pytest.mark.parametrize("rows", [["AC", "A"], ["A", "AC"], ["AC", "G", "EYY"]])
+def test_build_from_msa_rejects_ragged_rows_before_batching(
+    rows: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(profile_module, "_MAX_BATCH_CELLS", 1)
+    with pytest.raises(ValueError, match="equal lengths"):
+        ProfileHMM.build_from_msa(MSA([], rows))
 
 
 def test_build_from_msa_uses_occupancy_not_identity_for_match_columns() -> None:
@@ -139,8 +495,12 @@ def test_build_from_msa_distinguishes_insert_columns_from_deleted_positions() ->
     np.testing.assert_allclose(hmm.log_trans, without_empty_column.log_trans)
 
 
-def test_build_from_msa_handles_leading_insert_match_and_delete_paths() -> None:
+@pytest.mark.parametrize("batch_cells", [1, 6, 250_000])
+def test_build_from_msa_handles_leading_insert_match_and_delete_paths(
+    monkeypatch: pytest.MonkeyPatch, batch_cells: int
+) -> None:
     """At the start, rows can insert a residue, match M1, or skip it."""
+    monkeypatch.setattr(profile_module, "_MAX_BATCH_CELLS", batch_cells)
     rows = ["GAC", ".AC", "..C"]
     # Columns: G.. -> I0, AA. -> M1, CCC -> M2.
     assert match_column_mask(rows).tolist() == [False, True, True]
@@ -220,6 +580,44 @@ def test_transition_distributions_normalised_per_source_state() -> None:
         assert abs(m_sum - 1.0) < 1e-6
         assert abs(i_sum - 1.0) < 1e-6
         assert abs(d_sum - 1.0) < 1e-6
+
+
+def test_emission_odds_use_the_requested_state_residue_and_background() -> None:
+    hmm = ProfileHMM(
+        K=2,
+        log_match_emit=np.full((2, 20), -9.0),
+        log_insert_emit=np.full((3, 20), -9.0),
+        log_trans=np.zeros((3, N_TRANS)),
+        log_bg=np.full(20, -4.0),
+    )
+    a, c = AA_INDEX["A"], AA_INDEX["C"]
+    hmm.log_bg[c] = -3.0
+    hmm.log_match_emit[0, a] = -5.0
+    hmm.log_match_emit[1, c] = -1.0
+    hmm.log_insert_emit[0, a] = -4.0
+    hmm.log_insert_emit[2, c] = -6.0
+    assert hmm._match_odds(0, a) == -1.0
+    assert hmm._match_odds(1, c) == 2.0
+    assert hmm._insert_odds(0, a) == 0.0
+    assert hmm._insert_odds(2, c) == -3.0
+
+
+@pytest.mark.parametrize("seq, expected", [("", []), ("x-b.z", []), ("aXbzsi", [0, 15, 7])])
+def test_init_dp_handles_filtered_queries_and_single_match_profiles(
+    seq: str, expected: list[int]
+) -> None:
+    hmm = _build(["A", "A"])
+    encoded, length, match, insert, delete = hmm._init_dp(seq)
+    assert encoded == expected
+    assert length == len(expected)
+    shape = (len(expected) + 1, 2)
+    expected_match = np.full(shape, NEG_INF)
+    expected_match[0, 0] = 0.0
+    expected_delete = np.full(shape, NEG_INF)
+    expected_delete[0, 1] = -2.0  # Begin->D1 has probability 1/4.
+    np.testing.assert_array_equal(match, expected_match)
+    np.testing.assert_array_equal(insert, np.full(shape, NEG_INF))
+    np.testing.assert_array_equal(delete, expected_delete)
 
 
 def test_init_dp_encodes_query_and_initialises_score_tables() -> None:

@@ -2,6 +2,8 @@
 
 from io import StringIO
 
+import pytest
+
 from protein_profile_hmm.msa import match_column_mask, parse_stockholm
 
 
@@ -45,3 +47,21 @@ def test_match_column_mask_with_high_symfrac() -> None:
     rows = ["AC.DE", "A-.DE", "AC.DE"]
     mask = match_column_mask(rows, symfrac=0.8)
     assert mask.tolist() == [True, False, False, True, True]
+
+
+def test_match_column_mask_includes_exact_occupancy_threshold() -> None:
+    assert match_column_mask(["AC", "AC", "A.", "A."], 0.5).tolist() == [True, True]
+
+
+def test_match_column_mask_preserves_all_gap_columns_at_zero_threshold() -> None:
+    assert match_column_mask(["..", "--"], 0.0).tolist() == [True, True]
+
+
+def test_match_column_mask_handles_empty_input() -> None:
+    assert match_column_mask([]).tolist() == []
+    assert match_column_mask(["", ""]).tolist() == []
+
+
+def test_match_column_mask_rejects_ragged_rows() -> None:
+    with pytest.raises(ValueError, match="equal lengths"):
+        match_column_mask(["AC", "A"])
