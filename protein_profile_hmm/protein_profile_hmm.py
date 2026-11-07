@@ -426,123 +426,201 @@ class ProfileHMM:
     def _insert_odds(self, k: int, aa: int) -> float:
         return float(self.log_insert_emit[k, aa] - self.log_bg[aa])
 
-    def _init_dp(self, seq: str) -> tuple[list[int], int, np.ndarray, np.ndarray, np.ndarray]:
-        """Encode ``seq`` and allocate the ``(M, Id, D)`` DP matrices.
+    def _init_score_rows(self, seq: str) -> tuple[list[int], np.ndarray, np.ndarray, np.ndarray]:
+        """Encode the query and initialize Match/Insert/Delete rows of shape (K+1,).
 
-        Initialises ``M[0, 0] = 0`` and fills the all-delete prefix
-        ``D[0, k]`` for ``k ≥ 1``. All other cells start at ``NEG_INF``.
+        M0 represents Begin at score zero. The Delete row contains the complete
+        leading deletion path; all other entries start at NEG_INF.
 
-        This supplies scores for leading gaps, allowing the first query
-        residue to align to a later profile match position. Pseudocount
-        smoothing can give these deletion paths nonzero probabilities even
-        when no training row follows them;
+        For a profile built from ["AGGCE", "A..CE", "A...E"], the training paths are:
 
-        Returns ``(x, L, M, Id, D)``.
+            Row 1: AGGCE → B → M1(A) → I1(G) → I1(G) → M2(C) → M3(E)
+            Row 2: A..CE → B → M1(A) ────────────────→ M2(C) → M3(E)
+            Row 3: A...E → B → M1(A) ────────────────→ D2    → M3(E)
+
+        Query AAAA initializes these score rows before consuming any residues:
+
+            encoded: [0, 0, 0, 0]
+            Match:   [0, NEG_INF, NEG_INF, NEG_INF]
+            Insert:  [NEG_INF, NEG_INF, NEG_INF, NEG_INF]
+            Delete:  [NEG_INF, log2(1/5), log2(1/10), log2(1/30)]
+
+        B -> D1 -> D2 -> D3 uses probabilities 1/5, 1/2, and 1/3 without
+        consuming a query residue. For more details, see protein_profile_hmm/viterbi_first_residue_walkthrough.md.
         """
         x = []
         for ch in seq:
             aa = encode(ch)
             if aa >= 0:
                 x.append(aa)
-        L = len(x)
         K = self.K
-
-        M = np.full((L + 1, K + 1), NEG_INF)
-        Id = np.full((L + 1, K + 1), NEG_INF)
-        D = np.full((L + 1, K + 1), NEG_INF)
-
-        M[0, 0] = 0.0
+        match = np.full(K + 1, NEG_INF)
+        insert = np.full(K + 1, NEG_INF)
+        delete = np.full(K + 1, NEG_INF)
+        match[0] = 0.0
         if K >= 1:
-            D[0, 1] = float(self.log_trans[0, T_BD])
+            delete[1] = float(self.log_trans[0, T_BD])
             for k in range(2, K + 1):
-                D[0, k] = D[0, k - 1] + float(self.log_trans[k - 1, T_DD])
+                delete[k] = delete[k - 1] + float(self.log_trans[k - 1, T_DD])
+        return x, match, insert, delete
 
-        return x, L, M, Id, D
+    def _viterbi_row(
+        self,
+        aa: int,
+        previous: tuple[np.ndarray, np.ndarray, np.ndarray],
+        current: tuple[np.ndarray, np.ndarray, np.ndarray],
+    ) -> None:
+        """Fill one query residue's Match/Insert/Delete scores using best paths.
+
+        Each tuple contains three arrays of shape (K+1,), indexed by profile
+        position. Previous rows are read only; current rows are reset and filled.
+        The two tuples must have distinct buffers.
+
+        For rows ["AGGCE", "A..CE", "A...E"], K=3. Consuming the first A
+        produces these rows (rounded to three decimals):
+
+            position:   0        1        2        3
+            Match:   NEG_INF   0.833   -4.102   -4.752
+            Insert:    0     NEG_INF  NEG_INF  NEG_INF
+            Delete:  NEG_INF NEG_INF  -0.752   -2.336
+
+        M1(A) -> D2 -> D3 stays within this row. M1(A) -> I1(A) consumes
+        another A, so Insert reads the previous Match row instead.
+        """
+        previous_match, previous_insert, previous_delete = previous
+        match_scores, insert_scores, delete_scores = current
+        for scores in current:
+            scores.fill(NEG_INF)
+
+        K = self.K
+        trans = self.log_trans
+        match_odds = self.log_match_emit[:, aa] - self.log_bg[aa]
+        insert_odds = self.log_insert_emit[:, aa] - self.log_bg[aa]
+
+        if K >= 1:
+            # Begin and I0 are the only predecessors of M1.
+            best = max(previous_match[0] + trans[0, T_BM], previous_insert[0] + trans[0, T_IM])
+            if best > NEG_INF / 2:
+                match_scores[1] = match_odds[0] + best
+
+            # Source positions 1..K-1 feed destination matches 2..K.
+            from_match = previous_match[1:K] + trans[1:K, T_MM]
+            from_insert = previous_insert[1:K] + trans[1:K, T_IM]
+            from_delete = previous_delete[1:K] + trans[1:K, T_DM]
+            best_match = np.maximum(np.maximum(from_match, from_insert), from_delete)
+            match_scores[2:] = np.where(
+                best_match > NEG_INF / 2, match_odds[1:] + best_match, NEG_INF
+            )
+
+        from_match = previous_match + trans[:, T_MI]
+        from_insert = previous_insert + trans[:, T_II]
+        best_insert = np.maximum(from_match, from_insert)
+        insert_scores[:] = np.where(best_insert > NEG_INF / 2, insert_odds + best_insert, NEG_INF)
+
+        # D1 is only reachable before consuming residues.
+        # Computing Dk requires the update to D(k-1).
+        for k in range(2, K + 1):
+            from_match = match_scores[k - 1] + trans[k - 1, T_MD]
+            from_delete = delete_scores[k - 1] + trans[k - 1, T_DD]
+            delete_scores[k] = max(NEG_INF, from_match, from_delete)
+
+    def _forward_row(
+        self,
+        aa: int,
+        previous: tuple[np.ndarray, np.ndarray, np.ndarray],
+        current: tuple[np.ndarray, np.ndarray, np.ndarray],
+    ) -> None:
+        """Fill one residue's scores by summing path weights in log2 space.
+
+        Row shapes and buffer ownership match _viterbi_row. Match and Insert
+        read previous rows; Delete advances left-to-right in the current row.
+
+        Example: Training sequences
+
+        ["AGGCE", "A..CE", "A...E"],
+
+        with query AAAA. The match positions are
+        M1, M2, M3; the two G residues are assigned to insertion slot I1.
+
+        Let b = BACKGROUND_FREQ[AA_INDEX["A"]]
+        The Match probabilities for A are 4/23, 1/22, and 1/23.
+        Inserts receive 20 background-weighted prior counts:
+        I1 observes two Gs and no As, so P(A | I1) = 20*b/22.
+        I0, I2, and I3 observe no residues, so their A probability remains b.
+        Each emission contributes log2(P(A | state) / b) to the score.
+
+        Consuming the first A produces the following state:
+
+            position:   0        1        2        3
+            Match:   NEG_INF   0.833   -4.102   -4.752
+            Insert:    0     NEG_INF  NEG_INF  NEG_INF
+            Delete:  NEG_INF NEG_INF  -0.752   -2.254
+
+        D3 combines two paths that each consume the first A and skip M3:
+
+            B -> M1(A) -> D2 -> D3: weight (4/5) * (4/23/b) * (1/3) * (1/3)
+            B -> D1 -> M2(A) -> D3: weight (1/5) * (1/2) * (1/22/b) * (1/5)
+
+        These weights include emission odds. Forward adds them and takes log2,
+        giving -2.254 bits.
+
+        For D3's two candidate scores, see the section
+        "i = 1, k = 3: A match or deletion at position 3"
+        """
+        previous_match, previous_insert, previous_delete = previous
+        match_scores, insert_scores, delete_scores = current
+        for scores in current:
+            scores.fill(NEG_INF)
+
+        K = self.K
+        trans = self.log_trans
+        match_odds = self.log_match_emit[:, aa] - self.log_bg[aa]
+        insert_odds = self.log_insert_emit[:, aa] - self.log_bg[aa]
+
+        if K >= 1:
+            from_begin = previous_match[0] + trans[0, T_BM]
+            from_insert_zero = previous_insert[0] + trans[0, T_IM]
+            if max(from_begin, from_insert_zero) > NEG_INF / 2:
+                match_scores[1] = match_odds[0] + np.logaddexp2(from_begin, from_insert_zero)
+
+            from_match = previous_match[1:K] + trans[1:K, T_MM]
+            from_insert = previous_insert[1:K] + trans[1:K, T_IM]
+            from_delete = previous_delete[1:K] + trans[1:K, T_DM]
+            best_match = np.maximum(np.maximum(from_match, from_insert), from_delete)
+            total_match = np.logaddexp2(np.logaddexp2(from_match, from_insert), from_delete)
+            # Test the original candidates, as log2sumexp2 does before summing.
+            match_scores[2:] = np.where(
+                best_match > NEG_INF / 2, match_odds[1:] + total_match, NEG_INF
+            )
+
+        from_match = previous_match + trans[:, T_MI]
+        from_insert = previous_insert + trans[:, T_II]
+        best_insert = np.maximum(from_match, from_insert)
+        total_insert = np.logaddexp2(from_match, from_insert)
+        insert_scores[:] = np.where(best_insert > NEG_INF / 2, insert_odds + total_insert, NEG_INF)
+
+        for k in range(2, K + 1):
+            from_match = match_scores[k - 1] + trans[k - 1, T_MD]
+            from_delete = delete_scores[k - 1] + trans[k - 1, T_DD]
+            if max(from_match, from_delete) > NEG_INF / 2:
+                delete_scores[k] = np.logaddexp2(from_match, from_delete)
 
     def viterbi(self, seq: str) -> float:
-        """Return the Viterbi log-odds bit score of ``seq`` under this profile."""
-        x, L, M, Id, D = self._init_dp(seq)
-        K = self.K
-        NI = NEG_INF
-
-        # Row zero already contains the complete leading deletion paths.
-        for i in range(1, L + 1):
-            aa = x[i - 1]
-            for k in range(0, K + 1):
-                if k >= 1:
-                    if k == 1:
-                        # M[0, 0] represents Begin; use BM, not an ordinary MM edge.
-                        cands = [
-                            M[i - 1, 0] + float(self.log_trans[0, T_BM]),
-                            Id[i - 1, 0] + float(self.log_trans[0, T_IM]),
-                        ]
-                    else:
-                        cands = [
-                            M[i - 1, k - 1] + float(self.log_trans[k - 1, T_MM]),
-                            Id[i - 1, k - 1] + float(self.log_trans[k - 1, T_IM]),
-                            D[i - 1, k - 1] + float(self.log_trans[k - 1, T_DM]),
-                        ]
-                    best = max(cands)
-                    if best > NI / 2:
-                        M[i, k] = self._match_odds(k - 1, aa) + best
-                cands_i = [
-                    M[i - 1, k] + float(self.log_trans[k, T_MI]),
-                    Id[i - 1, k] + float(self.log_trans[k, T_II]),
-                ]
-                best_i = max(cands_i)
-                if best_i > NI / 2:
-                    Id[i, k] = self._insert_odds(k, aa) + best_i
-                # D1 is reachable only before consuming residues, via Begin.
-                if k >= 2:
-                    cands_d = [
-                        M[i, k - 1] + float(self.log_trans[k - 1, T_MD]),
-                        D[i, k - 1] + float(self.log_trans[k - 1, T_DD]),
-                    ]
-                    best_d = max(cands_d)
-                    if best_d > D[i, k]:
-                        D[i, k] = best_d
-
-        terminal = max(M[L, K], Id[L, K], D[L, K])
-        return float(terminal)
+        """Return the best path's log-odds bit score using O(K) DP storage."""
+        x, match, insert, delete = self._init_score_rows(seq)
+        previous = (match, insert, delete)
+        current = (np.empty_like(match), np.empty_like(insert), np.empty_like(delete))
+        for aa in x:
+            self._viterbi_row(aa, previous, current)
+            previous, current = current, previous
+        return float(max(scores[self.K] for scores in previous))
 
     def forward(self, seq: str) -> float:
-        """Return the Forward log-odds bit score of ``seq``."""
-        x, L, M, Id, D = self._init_dp(seq)
-        K = self.K
-        NI = NEG_INF
-
-        # Preserve the initialized deletion prefix without counting it again.
-        for i in range(1, L + 1):
-            aa = x[i - 1]
-            for k in range(0, K + 1):
-                if k >= 1:
-                    if k == 1:
-                        # Begin and I0 are the only predecessors of M1.
-                        contribs = [
-                            M[i - 1, 0] + float(self.log_trans[0, T_BM]),
-                            Id[i - 1, 0] + float(self.log_trans[0, T_IM]),
-                        ]
-                    else:
-                        contribs = [
-                            M[i - 1, k - 1] + float(self.log_trans[k - 1, T_MM]),
-                            Id[i - 1, k - 1] + float(self.log_trans[k - 1, T_IM]),
-                            D[i - 1, k - 1] + float(self.log_trans[k - 1, T_DM]),
-                        ]
-                    s = log2sumexp2(contribs)
-                    if s > NI / 2:
-                        M[i, k] = self._match_odds(k - 1, aa) + s
-                contribs_i = [
-                    M[i - 1, k] + float(self.log_trans[k, T_MI]),
-                    Id[i - 1, k] + float(self.log_trans[k, T_II]),
-                ]
-                s_i = log2sumexp2(contribs_i)
-                if s_i > NI / 2:
-                    Id[i, k] = self._insert_odds(k, aa) + s_i
-                if k >= 2:
-                    contribs_d = [
-                        M[i, k - 1] + float(self.log_trans[k - 1, T_MD]),
-                        D[i, k - 1] + float(self.log_trans[k - 1, T_DD]),
-                    ]
-                    D[i, k] = log2sumexp2(contribs_d)
-
-        return float(log2sumexp2([M[L, K], Id[L, K], D[L, K]]))
+        """Return the summed paths' log-odds bit score using O(K) DP storage."""
+        x, match, insert, delete = self._init_score_rows(seq)
+        previous = (match, insert, delete)
+        current = (np.empty_like(match), np.empty_like(insert), np.empty_like(delete))
+        for aa in x:
+            self._forward_row(aa, previous, current)
+            previous, current = current, previous
+        return log2sumexp2(scores[self.K] for scores in previous)

@@ -603,44 +603,35 @@ def test_emission_odds_use_the_requested_state_residue_and_background() -> None:
 
 
 @pytest.mark.parametrize("seq, expected", [("", []), ("x-b.z", []), ("aXbzsi", [0, 15, 7])])
-def test_init_dp_handles_filtered_queries_and_single_match_profiles(
+def test_init_score_rows_handles_filtered_queries_and_single_match_profiles(
     seq: str, expected: list[int]
 ) -> None:
     hmm = _build(["A", "A"])
-    encoded, length, match, insert, delete = hmm._init_dp(seq)
+    encoded, match, insert, delete = hmm._init_score_rows(seq)
     assert encoded == expected
-    assert length == len(expected)
-    shape = (len(expected) + 1, 2)
-    expected_match = np.full(shape, NEG_INF)
-    expected_match[0, 0] = 0.0
-    expected_delete = np.full(shape, NEG_INF)
-    expected_delete[0, 1] = -2.0  # Begin->D1 has probability 1/4.
-    np.testing.assert_array_equal(match, expected_match)
-    np.testing.assert_array_equal(insert, np.full(shape, NEG_INF))
-    np.testing.assert_array_equal(delete, expected_delete)
+    np.testing.assert_array_equal(match, [0.0, NEG_INF])
+    np.testing.assert_array_equal(insert, [NEG_INF, NEG_INF])
+    # Begin->D1 has probability 1/4, regardless of query length.
+    np.testing.assert_array_equal(delete, [NEG_INF, -2.0])
 
 
-def test_init_dp_encodes_query_and_initialises_score_tables() -> None:
-    """Five query residues initialise score tables for a three-position profile."""
+def test_init_score_rows_encodes_query_and_initialises_scores() -> None:
+    """Encode five query residues and initialize scores before consuming any."""
     hmm = _build(["AGGCE", "A..CE", "A...E"])
-    encoded, query_length, match_scores, insert_scores, delete_scores = hmm._init_dp("AAAAA")
+    encoded, match_scores, insert_scores, delete_scores = hmm._init_score_rows("AAAAA")
 
     assert encoded == [0, 0, 0, 0, 0]  # A is encoded as 0.
-    assert query_length == 5
     assert hmm.K == 3
-    # Rows count consumed residues (0..5); columns count profile positions (0..3).
+    # Each row indexes profile positions 0..3, independently of query length.
     for scores in (match_scores, insert_scores, delete_scores):
-        assert scores.shape == (6, 4)
+        assert scores.shape == (4,)
 
-    expected_match = np.full((6, 4), NEG_INF)
-    expected_match[0, 0] = 0.0  # Start before consuming residues or profile positions.
-    np.testing.assert_array_equal(match_scores, expected_match)
-    np.testing.assert_array_equal(insert_scores, np.full((6, 4), NEG_INF))
+    np.testing.assert_array_equal(match_scores, [0.0, NEG_INF, NEG_INF, NEG_INF])
+    np.testing.assert_array_equal(insert_scores, np.full(4, NEG_INF))
 
     # Without consuming residues, B->D1->D2->D3 uses probabilities 1/5, 1/2, 1/3.
-    expected_delete = np.full((6, 4), NEG_INF)
-    expected_delete[0, 1:] = np.log2([1 / 5, 1 / 10, 1 / 30])
-    np.testing.assert_allclose(delete_scores, expected_delete)
+    assert delete_scores[0] == NEG_INF
+    np.testing.assert_allclose(delete_scores[1:], np.log2([1 / 5, 1 / 10, 1 / 30]))
 
 
 @pytest.mark.parametrize("method", ["viterbi", "forward"])
@@ -718,3 +709,136 @@ def test_forward_geq_viterbi_on_unrelated_sequence() -> None:
     v = hmm.viterbi("WWWWWWWWW")
     f = hmm.forward("WWWWWWWWW")
     assert f >= v - 1e-6
+
+
+def test_viterbi_row_consumes_first_residue() -> None:
+    hmm = _build(["AGGCE", "A..CE", "A...E"])
+    encoded, match, insert, delete = hmm._init_score_rows("A")
+    current = (np.empty_like(match), np.empty_like(insert), np.empty_like(delete))
+    hmm._viterbi_row(encoded[0], (match, insert, delete), current)
+    match, insert, delete = current
+
+    background_a = BACKGROUND_FREQ[AA_INDEX["A"]]
+    # Each Match has one reachable path after consuming the first A.
+    match_weights = [
+        (4 / 5) * (4 / 23 / background_a),  # B -> M1(A)
+        (1 / 5) * (1 / 2) * (1 / 22 / background_a),  # B -> D1 -> M2(A)
+        (1 / 5) * (1 / 2) * (2 / 3) * (1 / 23 / background_a),  # B -> D1 -> D2 -> M3(A)
+    ]
+    assert match[0] == NEG_INF
+    np.testing.assert_allclose(match[1:], np.log2(match_weights), atol=1e-12, rtol=0)
+
+    # Only I0 can emit before a Match; its transition and emission odds are 1.
+    np.testing.assert_array_equal(insert, [0.0, NEG_INF, NEG_INF, NEG_INF])
+
+    # The best deletion paths extend M1(A) -> D2 -> D3, with probability 1/3 per edge.
+    np.testing.assert_array_equal(delete[:2], [NEG_INF, NEG_INF])
+    expected_delete = np.log2([match_weights[0] / 3, match_weights[0] / 9])
+    np.testing.assert_allclose(delete[2:], expected_delete, atol=1e-12, rtol=0)
+
+
+def _background_profile(K: int) -> ProfileHMM:
+    """A profile with background emissions and all transitions initially blocked.
+    Each test then enables only the transitions needed for its example."""
+    log_bg = np.log2(BACKGROUND_FREQ)
+    return ProfileHMM(
+        K=K,
+        log_match_emit=np.tile(log_bg, (K, 1)),
+        log_insert_emit=np.tile(log_bg, (K + 1, 1)),
+        log_trans=np.full((K + 1, N_TRANS), NEG_INF),
+        log_bg=log_bg,
+    )
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+def test_scoring_rows_reset_outputs_and_preserve_previous_scores(method: str) -> None:
+    hmm = _background_profile(1)
+    hmm.log_trans[0, T_BM] = -1.0
+    x, match, insert, delete = hmm._init_score_rows("A")
+    previous = (match, insert, delete)
+    originals = [row.copy() for row in previous]
+    current = (np.full(2, 99.0), np.full(2, 99.0), np.full(2, 99.0))
+    getattr(hmm, f"_{method}_row")(x[0], previous, current)
+    # Only B -> M1(A) is possible; stale scores must not survive anywhere else.
+    np.testing.assert_array_equal(current[0], [NEG_INF, -1.0])
+    np.testing.assert_array_equal(current[1:], np.full((2, 2), NEG_INF))
+    for actual, original in zip(previous, originals, strict=True):
+        np.testing.assert_array_equal(actual, original)
+
+
+def test_init_score_rows_preserves_blocked_deletion_prefix() -> None:
+    hmm = _background_profile(3)
+    _, match, insert, delete = hmm._init_score_rows("")
+    np.testing.assert_array_equal(match, [0, NEG_INF, NEG_INF, NEG_INF])
+    np.testing.assert_array_equal(insert, np.full(4, NEG_INF))
+    # Initialization adds transitions without applying a floor or threshold.
+    np.testing.assert_array_equal(delete, [NEG_INF, NEG_INF, 2 * NEG_INF, 3 * NEG_INF])
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+@pytest.mark.parametrize("seq, expected", [("", 0.0), ("A", -1.0), ("AA", -3.0)])
+def test_scoring_zero_match_profile_uses_only_insert_zero(
+    method: str, seq: str, expected: float
+) -> None:
+    hmm = _background_profile(0)
+    # B -> I0 has weight 1/2, and each subsequent I0 -> I0 has weight 1/4.
+    hmm.log_trans[0, T_MI] = -1.0
+    hmm.log_trans[0, T_II] = -2.0
+    assert getattr(hmm, method)(seq) == expected
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+def test_scoring_combines_two_tied_complete_paths(method: str) -> None:
+    hmm = _background_profile(1)
+    hmm.log_trans[0, [T_BM, T_MI, T_IM]] = -1.0
+    hmm.log_trans[1, T_MI] = -1.0
+    # AA has exactly two complete paths, each with weight 1/4:
+    # B -> M1(A) -> I1(A), and B -> I0(A) -> M1(A).
+    expected = -2.0 if method == "viterbi" else -1.0
+    assert getattr(hmm, method)("AA") == expected
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+def test_scoring_merges_match_insert_and_delete_predecessors(method: str) -> None:
+    hmm = _background_profile(3)
+    hmm.log_trans[0, [T_BM, T_BD]] = -1.0
+    hmm.log_trans[0, [T_MI, T_IM]] = 0.0
+    hmm.log_trans[1, [T_MM, T_MD]] = -1.0
+    hmm.log_trans[1, T_DM] = 0.0
+    hmm.log_trans[2, [T_MM, T_MI]] = -1.0
+    hmm.log_trans[2, [T_IM, T_DM]] = 0.0
+    # AAA has exactly three complete paths, all ending at M3:
+    # B -> M1(A) -> M2(A) -> M3(A):       1/2 * 1/2 * 1/2 = 1/8
+    # B -> D1 -> M2(A) -> I2(A) -> M3(A): 1/2 * 1 * 1/2 * 1 = 1/4
+    # B -> I0(A) -> M1(A) -> D2 -> M3(A): 1 * 1 * 1/2 * 1 = 1/2
+    expected = -1.0 if method == "viterbi" else np.log2(1 / 8 + 1 / 4 + 1 / 2)
+    np.testing.assert_allclose(getattr(hmm, method)("AAA"), expected, atol=1e-12, rtol=0)
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+def test_scoring_blocked_paths_remain_unreachable(method: str) -> None:
+    hmm = _background_profile(3)
+    for seq in ("", "A", "AAAA"):
+        assert getattr(hmm, method)(seq) == NEG_INF
+    # Open only B -> M1 -> D2 -> D3. Other predecessors remain blocked.
+    hmm.log_trans[0, T_BM] = -1.0
+    hmm.log_trans[1, T_MD] = -2.0
+    hmm.log_trans[2, T_DD] = -3.0
+    assert getattr(hmm, method)("A") == -6.0
+    assert getattr(hmm, method)("AA") == NEG_INF
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+@pytest.mark.parametrize("entry", [NEG_INF, NEG_INF / 2, np.nextafter(NEG_INF / 2, np.inf)])
+def test_scoring_applies_emitting_state_reachability_threshold(method: str, entry: float) -> None:
+    hmm = _background_profile(1)
+    hmm.log_trans[0, T_BM] = entry
+    expected = entry if entry > NEG_INF / 2 else NEG_INF
+    assert getattr(hmm, method)("A") == expected
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+def test_scoring_without_pseudocounts_preserves_observed_match_path(method: str) -> None:
+    hmm = _build(["AC", "AC"], pseudocount=0.0)
+    expected = -np.log2(BACKGROUND_FREQ[AA_INDEX["A"]] * BACKGROUND_FREQ[AA_INDEX["C"]])
+    np.testing.assert_allclose(getattr(hmm, method)("AC"), expected, atol=1e-12, rtol=0)

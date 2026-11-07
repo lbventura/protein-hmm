@@ -19,26 +19,33 @@ def globin_profile() -> ProfileHMM:
     return ProfileHMM.build_from_msa(msa)
 
 
-def test_HBB_HUMAN_scores_positively(globin_profile: ProfileHMM) -> None:
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+def test_HBB_HUMAN_scores_positively(globin_profile: ProfileHMM, method: str) -> None:
     _, seq = read_first(DATA / "HBB_HUMAN")
-    score = globin_profile.viterbi(seq)
-    assert score > 0, f"HBB_HUMAN Viterbi score should be positive, got {score:.2f}"
+    score = getattr(globin_profile, method)(seq)
+    assert score > 0, f"HBB_HUMAN {method} score should be positive, got {score:.2f}"
 
 
-def test_7LESS_DROME_scores_lower_than_HBB_HUMAN(globin_profile: ProfileHMM) -> None:
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+def test_7LESS_DROME_scores_lower_than_HBB_HUMAN(globin_profile: ProfileHMM, method: str) -> None:
     _, hbb = read_first(DATA / "HBB_HUMAN")
     _, seven = read_first(DATA / "7LESS_DROME.fa")
-    pos = globin_profile.viterbi(hbb)
-    neg = globin_profile.viterbi(seven)
+    score = getattr(globin_profile, method)
+    pos = score(hbb)
+    neg = score(seven)
     assert pos > neg, f"globin ({pos:.2f}) should outscore non-globin ({neg:.2f})"
 
 
-def test_globin_family_median_outscores_negative_control(globin_profile: ProfileHMM) -> None:
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+def test_globin_family_median_outscores_negative_control(
+    globin_profile: ProfileHMM, method: str
+) -> None:
     with open(DATA / "globins45.fa") as f:
         globins = list(parse_fasta(f))
     _, neg_seq = read_first(DATA / "7LESS_DROME.fa")
-    neg_score = globin_profile.viterbi(neg_seq)
-    pos_scores = [globin_profile.viterbi(seq) for _, seq in globins]
+    score = getattr(globin_profile, method)
+    neg_score = score(neg_seq)
+    pos_scores = [score(seq) for _, seq in globins]
     median = sorted(pos_scores)[len(pos_scores) // 2]
     assert median > neg_score, (
         f"median globin score {median:.2f} should exceed 7LESS_DROME {neg_score:.2f}"
