@@ -52,6 +52,8 @@ Create a branch from an up-to-date `main`. Use a short, lowercase, hyphen-separa
 - `infrastructure/` for environment, pipeline, and runtime setup.
 - `fix/` for bug fixes.
 
+Exceptions: if you are only asked to write an implementation plan.
+
 ### Pull requests
 
 Once publication is explicitly approved, push the branch and open a pull request against `main` with GitHub CLI:
