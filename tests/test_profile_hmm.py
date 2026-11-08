@@ -714,9 +714,7 @@ def test_forward_geq_viterbi_on_unrelated_sequence() -> None:
 def test_viterbi_row_consumes_first_residue() -> None:
     hmm = _build(["AGGCE", "A..CE", "A...E"])
     encoded, match, insert, delete = hmm._init_score_rows("A")
-    current = (np.empty_like(match), np.empty_like(insert), np.empty_like(delete))
-    hmm._viterbi_row(encoded[0], (match, insert, delete), current)
-    match, insert, delete = current
+    match, insert, delete = hmm._viterbi_row(encoded[0], (match, insert, delete))
 
     background_a = BACKGROUND_FREQ[AA_INDEX["A"]]
     # Each Match has one reachable path after consuming the first A.
@@ -751,17 +749,18 @@ def _background_profile(K: int) -> ProfileHMM:
 
 
 @pytest.mark.parametrize("method", ["viterbi", "forward"])
-def test_scoring_rows_reset_outputs_and_preserve_previous_scores(method: str) -> None:
+def test_scoring_rows_return_new_arrays_and_preserve_previous_scores(method: str) -> None:
     hmm = _background_profile(1)
     hmm.log_trans[0, T_BM] = -1.0
     x, match, insert, delete = hmm._init_score_rows("A")
     previous = (match, insert, delete)
     originals = [row.copy() for row in previous]
-    current = (np.full(2, 99.0), np.full(2, 99.0), np.full(2, 99.0))
-    getattr(hmm, f"_{method}_row")(x[0], previous, current)
-    # Only B -> M1(A) is possible; stale scores must not survive anywhere else.
+    current = getattr(hmm, f"_{method}_row")(x[0], previous)
+    # Only B -> M1(A) is possible; all other states remain unreachable.
     np.testing.assert_array_equal(current[0], [NEG_INF, -1.0])
     np.testing.assert_array_equal(current[1:], np.full((2, 2), NEG_INF))
+    for row in current:
+        row.fill(99.0)
     for actual, original in zip(previous, originals, strict=True):
         np.testing.assert_array_equal(actual, original)
 
