@@ -1,12 +1,14 @@
 [tool.ruff]
+required-version = "==0.16.10"
 target-version = "py314"
 line-length = 100
 extend-exclude = ["data", "docs"]
 
 [tool.ruff.lint]
 # E/W: pycodestyle, F: pyflakes (incl. F401 unused imports),
-# I: import sorting, UP: pyupgrade, B: flake8-bugbear, SIM: flake8-simplify
-select = ["E", "W", "F", "I", "UP", "B", "SIM"]
+# I: import sorting, UP: pyupgrade, B: flake8-bugbear, SIM: flake8-simplify,
+# NPY: NumPy, PT: pytest, RUF: Ruff-specific checks
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "NPY", "PT", "RUF"]
 ignore = [
     "E501",   # line length is handled by the formatter
     "SIM108", # ternary-vs-if is a style preference
@@ -16,6 +18,11 @@ ignore = [
 # M, I, D are the canonical state names for Match/Insert/Delete in profile
 # HMM literature (HMMER/Plan7). Renaming them would obscure the algorithm.
 "protein_profile_hmm/protein_profile_hmm.py" = ["E741"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["protein_profile_hmm", "weather_example", "tests"]
 
 [tool.pytest.ini_options]
 addopts = "-v"

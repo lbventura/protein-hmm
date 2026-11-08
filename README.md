@@ -12,7 +12,14 @@ micromamba activate protein-hmm
 pre-commit install
 ```
 
-The environment includes Python 3.14, NumPy, pytest, Ruff, and pre-commit. Run the tests and code checks with:
+The environment includes Python 3.14, NumPy, pytest, Ruff, mypy, and pre-commit.
+After changes to `environment.yml`, update an existing environment with:
+
+```bash
+micromamba install -n protein-hmm -f environment.yml
+```
+
+Run the tests and code checks with:
 
 ```bash
 python -m pytest tests
@@ -20,6 +27,23 @@ pre-commit run --all-files
 ```
 
 Without activating the environment, prefix commands with `micromamba run -n protein-hmm`.
+
+Ruff linting and formatting and strict mypy checking can also run directly:
+
+```bash
+ruff check .
+ruff format --check .
+python -m mypy
+```
+
+Tool settings live in `pyproject.toml`. The mypy hook uses the `protein-hmm`
+environment and checks both packages and the tests on every run. CI runs the
+complete pre-commit suite and the tests.
+
+Direct dependencies are pinned in `environment.yml`; Python tracks the 3.14
+series. When upgrading Ruff, update its environment pin, pre-commit revision,
+and `required-version` in `pyproject.toml` together. These pins do not lock
+transitive dependencies.
 
 ## Project structure
 

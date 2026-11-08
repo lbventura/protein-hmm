@@ -55,7 +55,7 @@ def test_is_residue_filters_alignment_chars() -> None:
     assert is_residue("X") is False
 
 
-@pytest.mark.parametrize("rows, width", [([], 0), (["", ""], 0), (["AC", "GY"], 2)])
+@pytest.mark.parametrize(("rows", "width"), [([], 0), (["", ""], 0), (["AC", "GY"], 2)])
 def test_alignment_width_counts_characters_in_rectangular_rows(rows: list[str], width: int) -> None:
     assert alignment_width(rows) == width
 

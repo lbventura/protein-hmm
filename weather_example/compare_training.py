@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from itertools import permutations
 
 import numpy as np
+import numpy.typing as npt
 
 from . import weather_example as wm
 from .hmm import HiddenMarkovModel
@@ -33,12 +34,14 @@ def generate_sequences(
     return [model.sample(length, rng)[0] for _ in range(n_seqs)]
 
 
-def _safe_log(x: np.ndarray) -> np.ndarray:
+def _safe_log(x: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     with np.errstate(divide="ignore"):
         return np.log(x)
 
 
-def _logsumexp(a: np.ndarray, axis: int | None = None) -> float | np.ndarray:
+def _logsumexp(
+    a: npt.NDArray[np.float64], axis: int | None = None
+) -> float | npt.NDArray[np.float64]:
     a = np.asarray(a)
     if axis is None:
         flat = a.ravel()
@@ -53,11 +56,11 @@ def _logsumexp(a: np.ndarray, axis: int | None = None) -> float | np.ndarray:
 
 
 def _log_forward_backward(
-    log_pi: np.ndarray,
-    log_A: np.ndarray,
-    log_B: np.ndarray,
+    log_pi: npt.NDArray[np.float64],
+    log_A: npt.NDArray[np.float64],
+    log_B: npt.NDArray[np.float64],
     obs: Sequence[int],
-) -> tuple[float, np.ndarray, np.ndarray]:
+) -> tuple[float, npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Numerically stable log-space forward/backward.
 
     Returns (log_lik, log_alpha, log_beta).
@@ -121,7 +124,7 @@ def baum_welch_improved(
             log_lik, log_alpha, log_beta = _log_forward_backward(log_pi, log_A, log_B, obs)
             total_ll += log_lik
 
-            # γ_t(i) = exp(log_alpha[t,i] + log_beta[t,i] - log_lik) ∈ [0, 1]
+            # gamma_t(i) = exp(log_alpha[t,i] + log_beta[t,i] - log_lik) ∈ [0, 1]
             gamma = np.exp(log_alpha + log_beta - log_lik)
 
             # ξ_t(i,j) = exp(log_alpha[t,i] + log_A[i,j]
@@ -168,14 +171,14 @@ def baum_welch_improved(
 
 
 def best_permutation_distance(
-    true_A: np.ndarray,
-    true_B: np.ndarray,
-    est_A: np.ndarray,
-    est_B: np.ndarray,
-) -> tuple[float, np.ndarray]:
+    true_A: npt.NDArray[np.float64],
+    true_B: npt.NDArray[np.float64],
+    est_A: npt.NDArray[np.float64],
+    est_B: npt.NDArray[np.float64],
+) -> tuple[float, npt.NDArray[np.intp]]:
     """Find the row permutation of (est_A, est_B) closest to truth in L1."""
     N = true_A.shape[0]
-    best: tuple[float, np.ndarray | None] = (np.inf, None)
+    best: tuple[float, npt.NDArray[np.intp] | None] = (np.inf, None)
     for perm in permutations(range(N)):
         p = np.array(perm)
         pA = est_A[p][:, p]
@@ -186,7 +189,7 @@ def best_permutation_distance(
     return best  # type: ignore[return-value]
 
 
-def fmt_matrix(M: np.ndarray, names: Sequence[str], label: str) -> str:
+def fmt_matrix(M: npt.NDArray[np.float64], names: Sequence[str], label: str) -> str:
     out = f"  {label}:\n"
     for i, row in enumerate(M):
         out += f"    {names[i]:6s}: " + "  ".join(f"{v:.3f}" for v in row) + "\n"

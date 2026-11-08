@@ -377,7 +377,7 @@ def test_build_from_msa_treats_low_residue_columns_as_insert() -> None:
 
 @pytest.mark.parametrize("rows", [[], [""], ["...", "---"]])
 def test_build_from_msa_rejects_empty_or_no_match_alignment(rows: list[str]) -> None:
-    with pytest.raises(ValueError, match="empty MSA|no match columns"):
+    with pytest.raises(ValueError, match=r"empty MSA|no match columns"):
         ProfileHMM.build_from_msa(MSA([], rows))
 
 
@@ -602,7 +602,7 @@ def test_emission_odds_use_the_requested_state_residue_and_background() -> None:
     assert hmm._insert_odds(2, c) == -3.0
 
 
-@pytest.mark.parametrize("seq, expected", [("", []), ("x-b.z", []), ("aXbzsi", [0, 15, 7])])
+@pytest.mark.parametrize(("seq", "expected"), [("", []), ("x-b.z", []), ("aXbzsi", [0, 15, 7])])
 def test_init_score_rows_handles_filtered_queries_and_single_match_profiles(
     seq: str, expected: list[int]
 ) -> None:
@@ -775,7 +775,7 @@ def test_init_score_rows_preserves_blocked_deletion_prefix() -> None:
 
 
 @pytest.mark.parametrize("method", ["viterbi", "forward"])
-@pytest.mark.parametrize("seq, expected", [("", 0.0), ("A", -1.0), ("AA", -3.0)])
+@pytest.mark.parametrize(("seq", "expected"), [("", 0.0), ("A", -1.0), ("AA", -3.0)])
 def test_scoring_zero_match_profile_uses_only_insert_zero(
     method: str, seq: str, expected: float
 ) -> None:
