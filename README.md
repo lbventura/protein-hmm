@@ -36,14 +36,23 @@ ruff format --check .
 python -m mypy
 ```
 
-Tool settings live in `pyproject.toml`. The mypy hook uses the `protein-hmm`
-environment and checks both packages and the tests on every run. CI runs the
-complete pre-commit suite and the tests.
+Tool settings live in `pyproject.toml`. The Ruff and mypy hooks use the
+`protein-hmm` environment. Mypy checks both packages and the tests on every run.
+CI runs the complete pre-commit suite and the tests.
 
 Direct dependencies are pinned in `environment.yml`; Python tracks the 3.14
-series. When upgrading Ruff, update its environment pin, pre-commit revision,
-and `required-version` in `pyproject.toml` together. These pins do not lock
-transitive dependencies.
+series.
+
+## Dependency updates
+
+[Dependabot](.github/dependabot.yml) checks Conda packages, GitHub Actions, and
+remote pre-commit hooks weekly on Mondays at 09:00 Europe/Berlin. Conda minor
+and patch updates are grouped; major updates are proposed separately. Update
+pull requests run the same CI checks as other contributions and require review.
+
+Python version changes remain manual because the minor version must agree with
+the Ruff target, mypy settings, and pre-commit interpreter. The `python=3.14`
+specification allows newer 3.14 patch releases when the environment is resolved.
 
 ## Project structure
 
