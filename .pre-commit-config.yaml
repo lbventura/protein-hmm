@@ -20,9 +20,11 @@ repos:
         args: ["--fix"]
       - id: ruff-format
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.4.0
+  - repo: local
     hooks:
       - id: mypy
-        additional_dependencies: ["numpy", "pytest"]
-        args: ["--strict"]
+        name: mypy
+        entry: micromamba run -n protein-hmm python -m mypy
+        language: system
+        pass_filenames: false
+        always_run: true

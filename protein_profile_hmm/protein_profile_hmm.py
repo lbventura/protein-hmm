@@ -103,7 +103,9 @@ class AlignmentTrace:
     residue: npt.NDArray[np.int8]
 
 
-def _trace_alignment(encoded: npt.NDArray[np.int8], is_match: np.ndarray) -> AlignmentTrace:
+def _trace_alignment(
+    encoded: npt.NDArray[np.int8], is_match: npt.NDArray[np.bool_]
+) -> AlignmentTrace:
     """Turn alignment cells into ordered B/M/I/D paths for a batch of rows.
 
     Example:
@@ -240,8 +242,8 @@ def _count_transitions(trace: AlignmentTrace, n_slots: int) -> npt.NDArray[np.in
 
 
 def _count_profile(
-    encoded: npt.NDArray[np.int8], is_match: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    encoded: npt.NDArray[np.int8], is_match: npt.NDArray[np.bool_]
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]]:
     """Count match emissions, insert emissions, and transitions from one trace.
 
     K is the number of alignment columns selected as match positions. For
@@ -272,7 +274,9 @@ def _count_profile(
     )
 
 
-def _count_alignment(rows: list[str], symfrac: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _count_alignment(
+    rows: list[str], symfrac: float
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]]:
     """Select global match columns, then collect raw counts in bounded batches.
 
     Example:
@@ -376,10 +380,10 @@ class ProfileHMM:
     """
 
     K: int
-    log_match_emit: np.ndarray
-    log_insert_emit: np.ndarray
-    log_trans: np.ndarray
-    log_bg: np.ndarray
+    log_match_emit: npt.NDArray[np.float64]
+    log_insert_emit: npt.NDArray[np.float64]
+    log_trans: npt.NDArray[np.float64]
+    log_bg: npt.NDArray[np.float64]
 
     @classmethod
     def build_from_msa(
@@ -426,7 +430,11 @@ class ProfileHMM:
     def _insert_odds(self, k: int, aa: int) -> float:
         return float(self.log_insert_emit[k, aa] - self.log_bg[aa])
 
-    def _init_score_rows(self, seq: str) -> tuple[list[int], np.ndarray, np.ndarray, np.ndarray]:
+    def _init_score_rows(
+        self, seq: str
+    ) -> tuple[
+        list[int], npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
+    ]:
         """Encode the query and initialize Match/Insert/Delete rows of shape (K+1,).
 
         M0 represents Begin at score zero. The Delete row contains the complete
@@ -470,8 +478,8 @@ class ProfileHMM:
     def _viterbi_row(
         self,
         aa: int,
-        previous: tuple[np.ndarray, np.ndarray, np.ndarray],
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        previous: tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]],
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """Return one query residue's Match/Insert/Delete scores using best paths.
 
         Return three new arrays of shape (K+1,), indexed by profile position.
@@ -563,8 +571,8 @@ class ProfileHMM:
     def _forward_row(
         self,
         aa: int,
-        previous: tuple[np.ndarray, np.ndarray, np.ndarray],
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        previous: tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]],
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """Return one query residue's scores by summing path weights in log2 space.
 
         previous contains Match/Insert/Delete rows for the query prefix before

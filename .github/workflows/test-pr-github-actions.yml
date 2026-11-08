@@ -1,4 +1,4 @@
-name: PR tests
+name: PR checks
 
 on:
   pull_request:
@@ -21,6 +21,16 @@ jobs:
           environment-file: environment.yml
           cache-environment: true
           init-shell: none
+
+      - name: Cache pre-commit environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.pre-commit-config.yaml', 'environment.yml') }}
+
+      - name: Run code quality checks
+        shell: micromamba-shell {0}
+        run: pre-commit run --all-files --show-diff-on-failure
 
       - name: Run tests
         shell: micromamba-shell {0}

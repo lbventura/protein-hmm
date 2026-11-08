@@ -8,8 +8,8 @@ Uses the classic weather example:
 from collections.abc import Sequence
 
 import numpy as np
+import numpy.typing as npt
 
-ArrayLike = Sequence[float] | Sequence[Sequence[float]] | np.ndarray
 SeedLike = np.random.Generator | int | None
 
 
@@ -26,20 +26,20 @@ class HiddenMarkovModel:
         Emission matrix. B[i, k] = P(o_t=k | s_t=i).
     """
 
-    pi: np.ndarray
-    A: np.ndarray
-    B: np.ndarray
+    pi: npt.NDArray[np.float64]
+    A: npt.NDArray[np.float64]
+    B: npt.NDArray[np.float64]
     N: int
     M: int
 
-    def __init__(self, pi: ArrayLike, A: ArrayLike, B: ArrayLike) -> None:
+    def __init__(self, pi: npt.ArrayLike, A: npt.ArrayLike, B: npt.ArrayLike) -> None:
         self.pi = np.array(pi, dtype=float)
         self.A = np.array(A, dtype=float)
         self.B = np.array(B, dtype=float)
         self.N = self.A.shape[0]
         self.M = self.B.shape[1]
 
-    def _forward_pass(self, observations: Sequence[int]) -> np.ndarray:
+    def _forward_pass(self, observations: Sequence[int]) -> npt.NDArray[np.float64]:
         """Compute alpha[t, i] = P(o_1..o_t, s_t=i) for all t, i."""
         T = len(observations)
         alpha = np.zeros((T, self.N))
@@ -49,7 +49,7 @@ class HiddenMarkovModel:
                 alpha[t, j] = self.B[j, observations[t]] * np.sum(alpha[t - 1] * self.A[:, j])
         return alpha
 
-    def _backward_pass(self, observations: Sequence[int]) -> np.ndarray:
+    def _backward_pass(self, observations: Sequence[int]) -> npt.NDArray[np.float64]:
         """Compute beta[t, i] = P(o_{t+1}..o_T | s_t=i) for all t, i."""
         T = len(observations)
         beta = np.zeros((T, self.N))
