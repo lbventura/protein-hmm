@@ -2,8 +2,7 @@
 
 With a profile built from `rows = ["AGGCE", "A..CE", "A...E"]`, the goal is to then score a sequence, for example `seq = "AAAA"`. This example shows how the Viterbi algorithm processes the first residue, `A`, step-by-step.
 
-The first outer-loop iteration has `i = 1`, `aa = x[0] = 0`
-(encoding A), and visits `k = 0, 1, 2, 3`.
+The first query iteration has `i = 1`, `aa = x[0] = 0` (encoding A).
 
 ```text
 Training column:  1   2   3   4   5
@@ -16,7 +15,7 @@ Profile state:   M1  I1  I1  M2  M3
 Read the chart from left to right as `k` increases. Yellow nodes are initialized
 scores at `i = 0`; the other state nodes contain scores at `i = 1`. An arrow from
 `i = 0` to `i = 1` emits the first A. A deletion arrow stays at the same `i` and
-emits nothing. Each state node shows the code's table entry and its accumulated score.
+emits nothing.
 
 Green and red boxes show retained and rejected candidates for a particular
 destination, before its emission score is added. Dotted arrows mark rejected
@@ -263,7 +262,7 @@ M[1, 1] = _match_odds(0, aa) + best = 1.155 - 0.322 = 0.833
 consumed zero residues. `M[0, 1]` is unreachable because entering M1 consumes
 a residue; `Id[0, 1]` is unreachable because entering I1 also consumes a
 residue. For query `AAAA`, the earliest valid path through I1 is
-`M1(first A) -> I1(second A)`, reaching `Id[2, 1]`. Both `M[0, 1]` and `Id[0, 1]` therefore remain valued at `NEG_INF`, so the code's `best_i > NI / 2`
+`M1(first A) -> I1(second A)`, reaching `Id[2, 1]`. Both `M[0, 1]` and `Id[0, 1]` therefore remain valued at `NEG_INF`, so the `best_insert > NEG_INF / 2`
 check fails and no insert emission is added.
 `D[1, 1]` stays unreachable because D1 is only entered from Begin at `i = 0`.
 
