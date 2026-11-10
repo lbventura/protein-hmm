@@ -60,8 +60,8 @@ _TRANSITION_TYPES = np.array(
     [
         [-1, T_BM, T_MI, T_BD],
         [-1, T_MM, T_MI, T_MD],
-        [-1, T_IM, T_II, T_IM],  # Preserve I->D folding into I->M.
-        [-1, T_DM, T_DM, T_DD],  # Preserve D->I folding into D->M.
+        [-1, T_IM, T_II, -1],  # I->D must be repaired before counting.
+        [-1, T_DM, -1, T_DD],  # D->I must be repaired before counting.
     ],
     dtype=np.intp,
 )
@@ -94,7 +94,8 @@ class AlignmentTrace:
     Each sequence starts with Begin at position 0. Match/Delete positions are
     1..K; Insert positions are 0..K. Only Match and Insert emit a residue;
     Begin and Delete carry -1. Insert-column gaps produce no event.
-    Sequence indices refer to rows within the current batch.
+    Sequence indices refer to rows within the current batch. Raw alignment
+    traces can contain adjacent I/D events; repair them before counting.
     """
 
     sequence: npt.NDArray[np.intp]
@@ -106,7 +107,10 @@ class AlignmentTrace:
 def _trace_alignment(
     encoded: npt.NDArray[np.int8], is_match: npt.NDArray[np.bool_]
 ) -> AlignmentTrace:
-    """Turn alignment cells into ordered B/M/I/D paths for a batch of rows.
+    """Turn alignment cells into raw B/M/I/D paths for a batch of rows.
+
+    Preserve column assignments here; _repair_trace resolves adjacent I/D
+    events before emission and transition counting.
 
     Example:
 
@@ -165,6 +169,104 @@ def _trace_alignment(
     )
 
 
+def _repair_trace(trace: AlignmentTrace) -> AlignmentTrace:
+    """Collapse adjacent I/D or D/I events into Match, from left to right.
+
+    Each pair keeps the Delete position and Insert residue. For example,
+    D2 -> I2(G) -> D3 becomes M2(G) -> D3. I1(G) -> I1(W) -> D2
+    instead becomes I1(G) -> M2(W). Residue order and K are preserved.
+
+    In each group of overlapping pairs, merge the first pair and every other
+    pair after it into a Match.
+
+    For example, take one alignment row with these fixed column assignments
+    (M denotes a match column, I an insert column, and '.' a gap):
+
+        row:     . G . W A C G . Y E
+        column:  M I M I M M I M I M
+
+        trace = _trace_alignment(
+            encode_rows([".G.WACG.YE"]),
+            np.array([True, False, True, False, True, True, False, True, False, True]),
+        )
+
+    Indices below refer to the original trace arrays, including Begin at index 0:
+
+        index:  0  1   2      3   4      5      6      7      8   9      10
+        event:  B  D1  I1(G)  D2  I2(W)  M3(A)  M4(C)  I4(G)  D5  I5(Y)  M6(E)
+
+    A candidate's left index i identifies the pair of events (i, i+1).
+    Candidates 1, 2, 3 overlap in the first D/I/D/I group; candidates 7, 8
+    overlap in the later I/D/I group, separated by the two Match events:
+
+        candidate_left_indices: [1, 2, 3, 7, 8]
+        repair_group_starts:    [T, F, F, T, F]
+        group_first_indices:   [1, 1, 1, 7, 7]
+        offsets within group:  [0, 1, 2, 0, 1]
+
+    Even offsets select repair_left_indices = [1, 3, 7], giving disjoint
+    pairs (1, 2), (3, 4), and (7, 8). Selection restarts at index 7.
+    The chosen pairs are transformed as follows:
+
+        D1 I1(G) -> M1(G)
+        D2 I2(W) -> M2(W)
+        I4(G) D5 -> M5(G)
+
+    where
+
+        insert_indices: [2, 4, 7]  # with the residues G, W, G, respectively
+        delete_indices: [1, 3, 8]  # Their profile positions are 1, 2, 5.
+        repaired path:  B -> M1(G) -> M2(W) -> M3(A) -> M4(C)
+                         -> M5(G) -> I5(Y) -> M6(E)
+
+    Each Delete becomes Match and each paired Insert is removed. The emitted
+    sequence remains GWACGYE and all six profile positions remain represented.
+    """
+    is_insert = trace.state == State.INSERT
+    is_delete = trace.state == State.DELETE
+    # Each index identifies the left event of a pair; its right event is at index + 1.
+    candidate_left_indices = np.flatnonzero(
+        (is_insert[:-1] & is_delete[1:]) | (is_delete[:-1] & is_insert[1:])
+    )
+    pairs_in_same_sequence = (
+        trace.sequence[candidate_left_indices] == trace.sequence[candidate_left_indices + 1]
+    )
+    candidate_left_indices = candidate_left_indices[pairs_in_same_sequence]
+    if candidate_left_indices.size == 0:
+        return trace
+
+    repair_group_starts = np.empty(candidate_left_indices.size, dtype=bool)
+    repair_group_starts[0] = True
+    repair_group_starts[1:] = np.diff(candidate_left_indices) > 1
+    group_first_indices = np.maximum.accumulate(
+        np.where(repair_group_starts, candidate_left_indices, 0)
+    )
+    # Restart leftmost, non-overlapping selection in each repair group.
+    repair_left_indices = candidate_left_indices[
+        (candidate_left_indices - group_first_indices) % 2 == 0
+    ]
+    insert_indices = np.where(
+        is_insert[repair_left_indices], repair_left_indices, repair_left_indices + 1
+    )
+    delete_indices = np.where(
+        is_delete[repair_left_indices], repair_left_indices, repair_left_indices + 1
+    )
+
+    # Keep the Delete's position and the Insert's residue, whichever event comes first.
+    states = trace.state.copy()
+    residues = trace.residue.copy()
+    states[delete_indices] = State.MATCH
+    residues[delete_indices] = trace.residue[insert_indices]
+    keep = np.ones(trace.state.size, dtype=bool)
+    keep[insert_indices] = False
+    return AlignmentTrace(
+        sequence=trace.sequence[keep],
+        state=states[keep],
+        position=trace.position[keep],
+        residue=residues[keep],
+    )
+
+
 def _count_emissions(trace: AlignmentTrace, state: State, n_slots: int) -> npt.NDArray[np.int64]:
     """Count residues emitted by Match or Insert states, without priors.
 
@@ -203,10 +305,10 @@ def _count_emissions(trace: AlignmentTrace, state: State, n_slots: int) -> npt.N
 
 
 def _count_transitions(trace: AlignmentTrace, n_slots: int) -> npt.NDArray[np.int64]:
-    """Count consecutive states within each training path, without priors.
+    """Count consecutive states within each repaired training path, without priors.
 
-    Keep the current counting conventions: B->I0 uses T_MI, I->D uses T_IM,
-    and D->I uses T_DM. No End event or transition is added to the trace.
+    B->I0 uses T_MI. Unsupported edges, including unrepaired I/D pairs,
+    raise ValueError. No End event or transition is added to the trace.
 
     For example, select both columns of ["AC", "A."] as match positions:
 
@@ -235,6 +337,16 @@ def _count_transitions(trace: AlignmentTrace, n_slots: int) -> npt.NDArray[np.in
     destination_state = trace.state[1:][same_sequence]
     source_position = trace.position[:-1][same_sequence]
     transition = _TRANSITION_TYPES[source_state, destination_state]
+    invalid = transition < 0
+    if np.any(invalid):
+        edge = int(np.flatnonzero(same_sequence)[np.argmax(invalid)])
+        source = State(int(trace.state[edge])).name
+        destination = State(int(trace.state[edge + 1])).name
+        raise ValueError(
+            f"Unsupported trace transition in sequence {trace.sequence[edge]}: "
+            f"{source} at {trace.position[edge]} -> "
+            f"{destination} at {trace.position[edge + 1]}; repair the trace before counting"
+        )
 
     counts = np.zeros((n_slots, N_TRANS), dtype=np.int64)
     np.add.at(counts, (source_position, transition), 1)
@@ -244,7 +356,11 @@ def _count_transitions(trace: AlignmentTrace, n_slots: int) -> npt.NDArray[np.in
 def _count_profile(
     encoded: npt.NDArray[np.int8], is_match: npt.NDArray[np.bool_]
 ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]]:
-    """Count match emissions, insert emissions, and transitions from one trace.
+    """Count match emissions, insert emissions, and transitions from one repaired trace.
+
+    Repair raw I/D pairs once, so both emission and transition counts describe
+    the same path. Repair can move insert observations into Match states;
+    it preserves the globally selected match columns and their number K.
 
     K is the number of alignment columns selected as match positions. For
     example, with is_match = [True, False, False, True]:
@@ -265,7 +381,7 @@ def _count_profile(
     Match emission counts have K rows (M1..MK); insert emission counts have
     K+1 rows (I0..IK). Each emission-count row has one column per amino acid.
     """
-    trace = _trace_alignment(encoded, is_match)
+    trace = _repair_trace(_trace_alignment(encoded, is_match))
     K = int(is_match.sum())
     return (
         _count_emissions(trace, State.MATCH, K),
@@ -396,8 +512,9 @@ class ProfileHMM:
 
         Match columns are chosen by the symfrac rule; the remaining columns are
         treated as inserts attached to the nearest preceding match column.
-        Each aligned sequence defines a training path; array operations count
-        the residues and transitions along those paths. Match emissions and
+        Each aligned sequence defines a training path. Adjacent I/D events
+        are repaired into Match events before array operations count residues
+        and transitions from the shared paths. Match emissions and
         transitions get ``pseudocount`` per cell; inserts get 20 background-
         weighted counts in total. Large alignments use row batches with one
         global match mask. Probabilities are stored in log2 space.
