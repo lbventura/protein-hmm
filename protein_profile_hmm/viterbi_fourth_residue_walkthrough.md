@@ -37,7 +37,7 @@ destination, before its emission score is added. Dotted arrows mark rejected
 candidates.
 
 Arrow labels give the `log_trans` entry and the score added, in bits.
-The probability-to-score computations remain [below](#transition-and-emission-contributions).
+The probability-to-score computations remain [below](#transition-probabilities).
 
 ```mermaid
 flowchart LR
@@ -179,7 +179,7 @@ Let `b = BACKGROUND_FREQ[aa]`, approximately `0.078078`. Emitting A adds
 | `_insert_odds(3, aa)` | I3: b | 0 |
 
 Only the two G residues in `AGGCE` are assigned to I1 during training
-(see [Count and normalize the transitions](viterbi_first_residue_walkthrough.md#count-and-normalize-the-transitions));
+(see [training paths and repair](viterbi_first_residue_walkthrough.md#transition-probabilities));
 the A residues are assigned to M1. I1's A count remains `20 * b`, while its
 total count is `20 + 2 = 22`, giving `log2(20/22) = -0.138`.
 The other insert slots have no observed residues and emit at background

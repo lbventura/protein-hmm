@@ -157,7 +157,7 @@ The residue is A again, so the match emission scores are unchanged. Let
 | `_insert_odds(3, aa)` | I3: b | 0 |
 
 I1 becomes reachable in this iteration. Only the two G residues in `AGGCE`
-are assigned to I1 during training (see [Count and normalize the transitions](viterbi_first_residue_walkthrough.md#count-and-normalize-the-transitions));
+are assigned to I1 during training (see [training paths and repair](viterbi_first_residue_walkthrough.md#transition-probabilities));
 the A residues are assigned to M1.
 I1's A count therefore remains `20 * b`, while its total count is `20 + 2 = 22`.
 Thus `_insert_odds(1, aa) = log2(20/22) = -0.138`.
