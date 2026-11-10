@@ -23,7 +23,7 @@ candidates. These colors describe the comparison, not whether a source state
 is usable elsewhere. All boxes use dark text for contrast.
 
 Arrow labels give the `log_trans` entry and the score added, in bits.
-The probability-to-score computations remain [below](#count-and-normalize-the-transitions).
+The probability-to-score computations remain [below](#transition-probabilities).
 
 ```mermaid
 flowchart LR
@@ -141,7 +141,8 @@ acid emission probability has to be scored.
 
 ### Transition probabilities
 
-The three training rows give these paths:
+During profile construction, `_count_profile` calls `_trace_alignment` to turn
+the three training rows into these paths:
 
 ```text
 Row 1: AGGCE → B → M1(A) → I1(G) → I1(G) → M2(C) → M3(E)
@@ -152,7 +153,16 @@ Row 3: A...E → B → M1(A) ────────────────→
 The two middle alignment columns are insert columns. A `.` there contributes
 no state or transition. The third row's gap at the M2 column instead produces `D2`.
 
-`trans_counts` starts with one pseudocount per transition. The denominator is
+Before counting emissions and transitions, `_count_profile` passes these paths
+through `_repair_trace`. It replaces adjacent Insert/Delete or Delete/Insert
+pairs with one Match, retaining the Delete position and Insert residue.
+Because none of the three paths contains such a pair, they are counted as shown.
+Repair happens during profile construction, before query scoring begins.
+See [Following profile construction](README.md#following-profile-construction)
+for an alignment that requires repair.
+
+After collecting the observations, `build_from_msa` adds one pseudocount per
+transition with the default `pseudocount=1.0`. The denominator is
 the sum of the smoothed counts for allowed transitions from the same source state.
 The order of each list below matches the order in the transition column.
 
