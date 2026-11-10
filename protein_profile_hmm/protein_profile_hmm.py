@@ -333,13 +333,11 @@ def _count_transitions(trace: AlignmentTrace, n_slots: int) -> npt.NDArray[np.in
     Neither M2 nor D2 has an outgoing transition to End; the counts at source position 2 stay zero.
     """
     same_sequence = trace.sequence[:-1] == trace.sequence[1:]
-    source_state = trace.state[:-1][same_sequence]
-    destination_state = trace.state[1:][same_sequence]
-    source_position = trace.position[:-1][same_sequence]
-    transition = _TRANSITION_TYPES[source_state, destination_state]
-    invalid = transition < 0
-    if np.any(invalid):
-        edge = int(np.flatnonzero(same_sequence)[np.argmax(invalid)])
+    transition = _TRANSITION_TYPES[trace.state[:-1], trace.state[1:]]
+    # Keep indices aligned with the trace, excluding pairs that cross sequence boundaries.
+    invalid_edges = np.flatnonzero(same_sequence & (transition < 0))
+    if invalid_edges.size:
+        edge = int(invalid_edges[0])
         source = State(int(trace.state[edge])).name
         destination = State(int(trace.state[edge + 1])).name
         raise ValueError(
@@ -349,7 +347,8 @@ def _count_transitions(trace: AlignmentTrace, n_slots: int) -> npt.NDArray[np.in
         )
 
     counts = np.zeros((n_slots, N_TRANS), dtype=np.int64)
-    np.add.at(counts, (source_position, transition), 1)
+    source_position = trace.position[:-1][same_sequence]
+    np.add.at(counts, (source_position, transition[same_sequence]), 1)
     return counts
 
 
