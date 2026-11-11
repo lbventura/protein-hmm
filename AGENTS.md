@@ -4,6 +4,10 @@ Write clear, concise Python that fits the existing project. Prefer straightforwa
 
 Use Clean Code, DRY, KISS, YAGNI, and SOLID as guidance; apply them with judgment rather than adding layers or generality without a current need.
 
+## Model selection and usage
+
+- When preparing implementation plans, the user generally selects models with a higher reasoning. As an agent, you should delegate all simple tasks (querying APIs, fetching documentation, etc...) to cheaper models with lower reasoning (for example, GPT-6 Luna) but review critically the quality of their work.
+
 ## Examples of good practice
 
 - Treat the [LAPACK reference BLAS implementation](https://github.com/Reference-LAPACK/lapack/tree/master/BLAS) as an example of focused routines with defined responsibilities that can be composed into larger algorithms. Apply the idea through clear inputs, outputs, and behavior; do not imitate Fortran-specific conventions in Python.
