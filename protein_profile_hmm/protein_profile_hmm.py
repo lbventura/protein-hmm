@@ -6,16 +6,17 @@ consensus column, trained from a multiple sequence alignment, and used to
 score query sequences against the family.
 
 All emission and transition probabilities are stored in log2 space. Scoring
-returns log-odds bit scores relative to a background null model: a positive
-bit score means the sequence is more likely under the family model than under
-the null.
+returns complete-path log-odds bit scores relative to the product of background
+residue frequencies conditional on query length. Exact zero probabilities
+are represented by negative infinity; impossible queries have score -inf.
 
 The allowed transitions are:
 
 - M : Match state; a sequence residue is aligned to consensus position k.
 - I : Insert state; an extra sequence residue occurs between consensus positions k and k+1.
 - D: Delete state; consensus position k is skipped, with no corresponding sequence residue.
-- B: Begin state; a silent (non-counting) entry state into the profile consensus.
+- B: Begin state; a silent entry state into the profile consensus.
+- End: Silent absorbing destination after the complete query has been consumed.
 
 Transition layout (slot index k = 0..K):
 
@@ -29,6 +30,13 @@ Transition layout (slot index k = 0..K):
       6     D_k -> D_{k+1}    (T_DD)
       7     B   -> M_1        (T_BM, only at k=0)
       8     B   -> D_1        (T_BD, only at k=0)
+      9     M_K -> End        (T_ME, only at k=K)
+     10     I_K -> End        (T_IE, only at k=K)
+     11     D_K -> End        (T_DE, only at k=K)
+
+At slot zero T_MI denotes B -> I0 and competes with T_BM and T_BD.
+Terminal Match and Insert states choose between insertion and End; D_K
+exits with probability one. End is silent and has no emission or DP row.
 """
 
 from collections.abc import Iterable
@@ -41,7 +49,7 @@ import numpy.typing as npt
 from .amino_acids import BACKGROUND_FREQ, N_AMINO_ACIDS, alignment_width, encode, encode_rows
 from .msa import MSA
 
-NEG_INF: float = -1e30
+NEG_INF: float = -np.inf
 T_MM = 0
 T_MI = 1
 T_MD = 2
@@ -51,7 +59,10 @@ T_DM = 5
 T_DD = 6
 T_BM = 7
 T_BD = 8
-N_TRANS = 9
+T_ME = 9
+T_IE = 10
+T_DE = 11
+N_TRANS = 12
 
 # Limit event/index temporaries to one batch; a single wider row is still allowed.
 _MAX_BATCH_CELLS = 250_000
@@ -82,7 +93,7 @@ def log2sumexp2(values: Iterable[float]) -> float:
     if arr.size == 0:
         return NEG_INF
     m = float(arr.max())
-    if m <= NEG_INF / 2:
+    if m == NEG_INF:
         return NEG_INF
     return m + float(np.log2(np.sum(2.0 ** (arr - m))))
 
@@ -305,10 +316,11 @@ def _count_emissions(trace: AlignmentTrace, state: State, n_slots: int) -> npt.N
 
 
 def _count_transitions(trace: AlignmentTrace, n_slots: int) -> npt.NDArray[np.int64]:
-    """Count consecutive states within each repaired training path, without priors.
+    """Count adjacent transitions and one terminal exit per repaired training path.
 
     B->I0 uses T_MI. Unsupported edges, including unrepaired I/D pairs,
-    raise ValueError. No End event or transition is added to the trace.
+    raise ValueError. At least one match position is required. End transitions
+    are counted from final events without adding End events to the trace.
 
     For example, select both columns of ["AC", "A."] as match positions:
 
@@ -321,17 +333,18 @@ def _count_transitions(trace: AlignmentTrace, n_slots: int) -> npt.NDArray[np.in
         Row 1: AC -> B -> M1(A) -> M2(C)
         Row 2: A. -> B -> M1(A) -> D2
 
-    This function counts the transitions between consecutive states in each path.
     The result has shape (3, N_TRANS). Rows identify source positions
-    0, 1, and 2; columns identify transition types. Only three entries
-    are nonzero:
+    0, 1, and 2; columns identify transition types. Five entries are nonzero:
 
         counts[0, T_BM] == 2  # B -> M1 in both rows.
         counts[1, T_MM] == 1  # M1 -> M2 in Row 1.
         counts[1, T_MD] == 1  # M1 -> D2 in Row 2.
 
-    Neither M2 nor D2 has an outgoing transition to End; the counts at source position 2 stay zero.
+        counts[2, T_ME] == 1  # M2 -> End in Row 1.
+        counts[2, T_DE] == 1  # D2 -> End in Row 2.
     """
+    if n_slots < 2:
+        raise ValueError("Transition counting requires at least one match position")
     same_sequence = trace.sequence[:-1] == trace.sequence[1:]
     transition = _TRANSITION_TYPES[trace.state[:-1], trace.state[1:]]
     # Keep indices aligned with the trace, excluding pairs that cross sequence boundaries.
@@ -349,6 +362,13 @@ def _count_transitions(trace: AlignmentTrace, n_slots: int) -> npt.NDArray[np.in
     counts = np.zeros((n_slots, N_TRANS), dtype=np.int64)
     source_position = trace.position[:-1][same_sequence]
     np.add.at(counts, (source_position, transition[same_sequence]), 1)
+
+    # Sequence boundaries and the final event identify one exit per repaired path.
+    final_indices = np.flatnonzero(np.r_[~same_sequence, True])
+    exit_types = np.array([-1, T_ME, T_IE, T_DE])[trace.state[final_indices]]
+    if np.any(exit_types < 0):
+        raise ValueError("Training paths must end at a Match, Insert, or Delete state")
+    np.add.at(counts, (trace.position[final_indices], exit_types), 1)
     return counts
 
 
@@ -419,6 +439,8 @@ def _count_alignment(
         trans[0, T_BM] == 2          # B -> M1 in both rows.
         trans[1, T_MM] == 1          # M1 -> M2 in Row 1.
         trans[1, T_MD] == 1          # M1 -> D2 in Row 2.
+        trans[2, T_ME] == 1          # M2 -> End in Row 1.
+        trans[2, T_DE] == 1          # D2 -> End in Row 2.
 
     All insert counts are zero because neither path visits an insert state.
     """
@@ -458,40 +480,55 @@ def _count_alignment(
 
 
 def _normalise_rows(counts: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-    sums = counts.sum(axis=1, keepdims=True)
-    return np.divide(counts, np.where(sums <= 0, 1.0, sums))
+    """Normalize rows, using a uniform distribution for wholly unobserved rows."""
+    # Scale before summing so even large finite pseudocounts remain normalized.
+    maxima = counts.max(axis=1, keepdims=True)
+    scaled = np.divide(counts, maxima, out=np.zeros_like(counts), where=maxima > 0)
+    sums = scaled.sum(axis=1, keepdims=True)
+    probs = np.full_like(counts, 1.0 / counts.shape[1])
+    return np.divide(scaled, sums, out=probs, where=sums > 0)
 
 
-def _normalise_transitions(counts: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-    """Normalize each source's alternatives, retaining current boundary rules."""
-    probs = counts.copy()
+def _normalise_transitions(
+    counts: npt.NDArray[np.float64], pseudocount: float = 0.0
+) -> npt.NDArray[np.float64]:
+    """Smooth and normalize legal outgoing alternatives; unused cells stay zero."""
+    probs = np.zeros_like(counts, dtype=float)
     groups = (
-        probs[0:1, T_BM : T_BD + 1],  # Begin's M/D choice.
-        probs[0:1, T_MI : T_MI + 1],  # Virtual M0->I0.
-        probs[0:1, T_IM : T_II + 1],
-        probs[1:-1, T_MM : T_MD + 1],  # Internal M, I, and D sources.
-        probs[1:-1, T_IM : T_II + 1],
-        probs[1:-1, T_DM : T_DD + 1],
-        probs[-1:, T_MI : T_MI + 1],  # Terminal insertion and self-loop.
-        probs[-1:, T_II : T_II + 1],
+        (slice(0, 1), [T_BM, T_MI, T_BD]),
+        (slice(0, 1), [T_IM, T_II]),
+        (slice(1, -1), [T_MM, T_MI, T_MD]),
+        (slice(1, -1), [T_IM, T_II]),
+        (slice(1, -1), [T_DM, T_DD]),
+        (slice(-1, None), [T_MI, T_ME]),
+        (slice(-1, None), [T_II, T_IE]),
+        (slice(-1, None), [T_DE]),
     )
-    for group in groups:
-        sums = group.sum(axis=1, keepdims=True)
-        np.divide(group, sums, out=group, where=sums > 0)
+    for slots, transitions in groups:
+        probs[slots, transitions] = _normalise_rows(counts[slots, transitions] + pseudocount)
     return probs
+
+
+def _log_probabilities(probs: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Convert exact zero probabilities to negative infinity without warnings."""
+    logs = np.full_like(probs, NEG_INF)
+    return np.log2(probs, out=logs, where=probs > 0)
 
 
 @dataclass
 class ProfileHMM:
     """A glocal profile HMM.
 
-    The profile has ``K`` Match columns (consensus positions). Conceptually
+    The profile requires ``K >= 1`` Match columns (consensus positions). Conceptually
     there are also ``K`` Delete states (silent, one per Match column) and
     ``K + 1`` Insert states (one before column 1, one between each pair of
     consecutive match columns, one after column K).
 
-    All log-prob arrays are in log2 space. Bit scores are computed as
-    log-odds relative to ``BACKGROUND_FREQ``.
+    Begin chooses between M1, I0, and D1. Terminal M_K/I_K have explicit
+    competing exits to silent End, while D_K exits with probability one.
+    Direct construction must supply all 12 transition columns and exits.
+    All log-probability arrays are in log2 space, with -inf for exact zeros.
+    Bit scores use the ``BACKGROUND_FREQ`` residue product conditional on length.
     """
 
     K: int
@@ -499,6 +536,10 @@ class ProfileHMM:
     log_insert_emit: npt.NDArray[np.float64]
     log_trans: npt.NDArray[np.float64]
     log_bg: npt.NDArray[np.float64]
+
+    def __post_init__(self) -> None:
+        if self.K < 1:
+            raise ValueError("ProfileHMM requires at least one match position (K >= 1)")
 
     @classmethod
     def build_from_msa(
@@ -513,11 +554,17 @@ class ProfileHMM:
         treated as inserts attached to the nearest preceding match column.
         Each aligned sequence defines a training path. Adjacent I/D events
         are repaired into Match events before array operations count residues
-        and transitions from the shared paths. Match emissions and
-        transitions get ``pseudocount`` per cell; inserts get 20 background-
-        weighted counts in total. Large alignments use row batches with one
-        global match mask. Probabilities are stored in log2 space.
+        and transitions, including one exit per row, from the shared paths.
+        Match emissions and legal outgoing alternatives get the same finite,
+        nonnegative ``pseudocount`` per alternative; inserts get 20 background-
+        weighted counts in total. At zero pseudocount, wholly unobserved groups
+        are uniform and observed zero alternatives remain impossible. Unused
+        transition cells stay zero. Large alignments use row batches with one
+        global match mask. Probabilities are stored in log2 space, with -inf
+        representing exact zeros.
         """
+        if not np.isfinite(pseudocount) or pseudocount < 0:
+            raise ValueError("pseudocount must be finite and nonnegative")
         match_counts, insert_counts, trans_counts = _count_alignment(msa.rows, symfrac)
         K = len(match_counts)
 
@@ -525,12 +572,12 @@ class ProfileHMM:
         # fixed total of 20 background-weighted counts, independent of pseudocount.
         match_probs = _normalise_rows(match_counts.astype(float) + pseudocount)
         insert_probs = _normalise_rows(insert_counts + N_AMINO_ACIDS * BACKGROUND_FREQ)
-        trans_probs = _normalise_transitions(trans_counts.astype(float) + pseudocount)
+        trans_probs = _normalise_transitions(trans_counts.astype(float), pseudocount)
 
-        log_match_emit = np.log2(np.clip(match_probs, 1e-300, None))
-        log_insert_emit = np.log2(np.clip(insert_probs, 1e-300, None))
-        log_trans = np.log2(np.clip(trans_probs, 1e-300, None))
-        log_bg = np.log2(np.clip(BACKGROUND_FREQ, 1e-300, None))
+        log_match_emit = _log_probabilities(match_probs)
+        log_insert_emit = _log_probabilities(insert_probs)
+        log_trans = _log_probabilities(trans_probs)
+        log_bg = _log_probabilities(BACKGROUND_FREQ)
 
         return cls(
             K=K,
@@ -567,11 +614,11 @@ class ProfileHMM:
             encoded: [0, 0, 0, 0]
             Match:   [0, NEG_INF, NEG_INF, NEG_INF]
             Insert:  [NEG_INF, NEG_INF, NEG_INF, NEG_INF]
-            Delete:  [NEG_INF, log2(1/5), log2(1/10), log2(1/30)]
+            Delete:  [NEG_INF, log2(1/6), log2(1/12), log2(1/36)]
 
-        B -> D1: path probability of 1/5
-        B -> D1 -> D2: 1/5 * 1/2 = 1/10
-        B -> D1 -> D2 -> D3: 1/5 * 1/2 * 1/3 = 1/30
+        B -> D1: path probability of 1/6
+        B -> D1 -> D2: 1/6 * 1/2 = 1/12
+        B -> D1 -> D2 -> D3: 1/6 * 1/2 * 1/3 = 1/36
 
         For more details, see the "Transition Probabilities" section of protein_profile_hmm/viterbi_first_residue_walkthrough.md.
         """
@@ -585,10 +632,9 @@ class ProfileHMM:
         insert = np.full(K + 1, NEG_INF)
         delete = np.full(K + 1, NEG_INF)
         match[0] = 0.0
-        if K >= 1:
-            delete[1] = float(self.log_trans[0, T_BD])
-            for k in range(2, K + 1):
-                delete[k] = delete[k - 1] + float(self.log_trans[k - 1, T_DD])
+        delete[1] = float(self.log_trans[0, T_BD])
+        for k in range(2, K + 1):
+            delete[k] = delete[k - 1] + float(self.log_trans[k - 1, T_DD])
         return x, match, insert, delete
 
     def _viterbi_row(
@@ -610,15 +656,15 @@ class ProfileHMM:
             position:   0        1        2        3
             Match:      0     NEG_INF  NEG_INF  NEG_INF
             Insert:  NEG_INF  NEG_INF  NEG_INF  NEG_INF
-            Delete:  NEG_INF   -2.322   -3.322   -4.907
+            Delete:  NEG_INF   -2.585   -3.585   -5.170
 
         Calling _viterbi_row(AA_INDEX["A"], previous) returns the following
         rows:
 
             position:   0        1        2        3
-            Match:   NEG_INF   0.833   -4.102   -4.752
-            Insert:    0     NEG_INF  NEG_INF  NEG_INF
-            Delete:  NEG_INF NEG_INF  -0.752   -2.336
+            Match:   NEG_INF   0.570   -4.365   -5.015
+            Insert:  -2.585   NEG_INF  NEG_INF  NEG_INF
+            Delete:  NEG_INF NEG_INF  -1.015   -2.600
 
         Each candidate extends a predecessor's best path by adding the
         edge's log2 transition probability. Match and Insert also add
@@ -634,14 +680,14 @@ class ProfileHMM:
         come from previous D1 and D2: previous M1/M2 and I1/I2 are unreachable.
         For example, with b = P(A | background), M2 is:
 
-            B -> D1 -> M2(A): log2(1/5) + log2(1/2) + log2((1/22)/b)
-                             = -4.102
+            B -> D1 -> M2(A): log2(1/6) + log2(1/2) + log2((1/22)/b)
+                             = -4.365
 
         Among Insert states, only I0 is reachable, via the virtual M0 -> I0
         edge. Insert reads previous Match scores, so the new M1(A) cannot
         feed I1 until another residue is consumed. Delete emits nothing and uses the
-        newly computed row: M1(A) -> D2 -> D3 gives -0.752 and -2.336.
-        At D3, this beats the alternative new M2(A) -> D3 path (-6.424).
+        newly computed row: M1(A) -> D2 -> D3 gives -1.015 and -2.600.
+        At D3, this beats the alternative new M2(A) -> D3 path (-6.687).
         For more details, see the "i = 1, k = 3" section of protein_profile_hmm/viterbi_first_residue_walkthrough.md.
         """
         previous_match, previous_insert, previous_delete = previous
@@ -655,32 +701,28 @@ class ProfileHMM:
         match_odds = self.log_match_emit[:, aa] - self.log_bg[aa]
         insert_odds = self.log_insert_emit[:, aa] - self.log_bg[aa]
 
-        if K >= 1:
-            # Begin and I0 are the only predecessors of M1.
-            best = max(previous_match[0] + trans[0, T_BM], previous_insert[0] + trans[0, T_IM])
-            if best > NEG_INF / 2:
-                match_scores[1] = match_odds[0] + best
+        # Begin and I0 are the only predecessors of M1.
+        best = max(previous_match[0] + trans[0, T_BM], previous_insert[0] + trans[0, T_IM])
+        match_scores[1] = match_odds[0] + best
 
-            # Source positions 1..K-1 feed destination matches 2..K.
-            from_match = previous_match[1:K] + trans[1:K, T_MM]
-            from_insert = previous_insert[1:K] + trans[1:K, T_IM]
-            from_delete = previous_delete[1:K] + trans[1:K, T_DM]
-            best_match = np.maximum(np.maximum(from_match, from_insert), from_delete)
-            match_scores[2:] = np.where(
-                best_match > NEG_INF / 2, match_odds[1:] + best_match, NEG_INF
-            )
+        # Source positions 1..K-1 feed destination matches 2..K.
+        from_match = previous_match[1:K] + trans[1:K, T_MM]
+        from_insert = previous_insert[1:K] + trans[1:K, T_IM]
+        from_delete = previous_delete[1:K] + trans[1:K, T_DM]
+        best_match = np.maximum(np.maximum(from_match, from_insert), from_delete)
+        match_scores[2:] = match_odds[1:] + best_match
 
         from_match = previous_match + trans[:, T_MI]
         from_insert = previous_insert + trans[:, T_II]
         best_insert = np.maximum(from_match, from_insert)
-        insert_scores[:] = np.where(best_insert > NEG_INF / 2, insert_odds + best_insert, NEG_INF)
+        insert_scores[:] = insert_odds + best_insert
 
         # D1 is only reachable before consuming residues.
         # Computing Dk requires the update to D(k-1).
         for k in range(2, K + 1):
             from_match = match_scores[k - 1] + trans[k - 1, T_MD]
             from_delete = delete_scores[k - 1] + trans[k - 1, T_DD]
-            delete_scores[k] = max(NEG_INF, from_match, from_delete)
+            delete_scores[k] = max(from_match, from_delete)
 
         return match_scores, insert_scores, delete_scores
 
@@ -724,25 +766,25 @@ class ProfileHMM:
             position:   0        1        2        3
             Match:      0     NEG_INF  NEG_INF  NEG_INF
             Insert:  NEG_INF  NEG_INF  NEG_INF  NEG_INF
-            Delete:  NEG_INF   -2.322   -3.322   -4.907
+            Delete:  NEG_INF   -2.585   -3.585   -5.170
 
         Calling _forward_row(AA_INDEX["A"], previous) returns:
 
             position:   0        1        2        3
-            Match:   NEG_INF   0.833   -4.102   -4.752
-            Insert:    0     NEG_INF  NEG_INF  NEG_INF
-            Delete:  NEG_INF NEG_INF  -0.752   -2.254
+            Match:   NEG_INF   0.570   -4.365   -5.015
+            Insert:  -2.585   NEG_INF  NEG_INF  NEG_INF
+            Delete:  NEG_INF NEG_INF  -1.015   -2.517
 
         Each reachable Match/Insert state and D2 has only one path at this step, so their scores equal
         Viterbi's. D3 combines two paths within the new row:
 
-            via D2: B -> M1(A) -> D2 -> D3    score -2.336
-            via M2: B -> D1 -> M2(A) -> D3    score -6.424
+            via D2: B -> M1(A) -> D2 -> D3    score -2.600
+            via M2: B -> D1 -> M2(A) -> D3    score -6.687
 
-        Forward computes logaddexp2(-2.336, -6.424), around -2.254;
-        Viterbi takes their maximum, -2.336.
+        Forward computes logaddexp2(-2.600, -6.687), around -2.517;
+        Viterbi takes their maximum, -2.600.
 
-        For the derivation, see "i = 1, k = 3: A match or deletion at position 3" in
+        For the derivation, see "i = 1, k = 3: reach the last profile position" in
         protein_profile_hmm/viterbi_first_residue_walkthrough.md.
         """
         previous_match, previous_insert, previous_delete = previous
@@ -756,48 +798,61 @@ class ProfileHMM:
         match_odds = self.log_match_emit[:, aa] - self.log_bg[aa]
         insert_odds = self.log_insert_emit[:, aa] - self.log_bg[aa]
 
-        if K >= 1:
-            from_begin = previous_match[0] + trans[0, T_BM]
-            from_insert_zero = previous_insert[0] + trans[0, T_IM]
-            if max(from_begin, from_insert_zero) > NEG_INF / 2:
-                match_scores[1] = match_odds[0] + np.logaddexp2(from_begin, from_insert_zero)
+        from_begin = previous_match[0] + trans[0, T_BM]
+        from_insert_zero = previous_insert[0] + trans[0, T_IM]
+        match_scores[1] = match_odds[0] + np.logaddexp2(from_begin, from_insert_zero)
 
-            from_match = previous_match[1:K] + trans[1:K, T_MM]
-            from_insert = previous_insert[1:K] + trans[1:K, T_IM]
-            from_delete = previous_delete[1:K] + trans[1:K, T_DM]
-            best_match = np.maximum(np.maximum(from_match, from_insert), from_delete)
-            total_match = np.logaddexp2(np.logaddexp2(from_match, from_insert), from_delete)
-            # Test the original candidates, as log2sumexp2 does before summing.
-            match_scores[2:] = np.where(
-                best_match > NEG_INF / 2, match_odds[1:] + total_match, NEG_INF
-            )
+        from_match = previous_match[1:K] + trans[1:K, T_MM]
+        from_insert = previous_insert[1:K] + trans[1:K, T_IM]
+        from_delete = previous_delete[1:K] + trans[1:K, T_DM]
+        total_match = np.logaddexp2(np.logaddexp2(from_match, from_insert), from_delete)
+        match_scores[2:] = match_odds[1:] + total_match
 
         from_match = previous_match + trans[:, T_MI]
         from_insert = previous_insert + trans[:, T_II]
-        best_insert = np.maximum(from_match, from_insert)
         total_insert = np.logaddexp2(from_match, from_insert)
-        insert_scores[:] = np.where(best_insert > NEG_INF / 2, insert_odds + total_insert, NEG_INF)
+        insert_scores[:] = insert_odds + total_insert
 
         for k in range(2, K + 1):
             from_match = match_scores[k - 1] + trans[k - 1, T_MD]
             from_delete = delete_scores[k - 1] + trans[k - 1, T_DD]
-            if max(from_match, from_delete) > NEG_INF / 2:
-                delete_scores[k] = np.logaddexp2(from_match, from_delete)
+            delete_scores[k] = np.logaddexp2(from_match, from_delete)
 
         return match_scores, insert_scores, delete_scores
 
+    def _terminal_candidates(
+        self,
+        rows: tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]],
+    ) -> tuple[float, float, float]:
+        """Extend the final Match/Insert/Delete scores through End exactly once."""
+        match, insert, delete = rows
+        return (
+            float(match[self.K] + self.log_trans[self.K, T_ME]),
+            float(insert[self.K] + self.log_trans[self.K, T_IE]),
+            float(delete[self.K] + self.log_trans[self.K, T_DE]),
+        )
+
     def viterbi(self, seq: str) -> float:
-        """Return the best path's log-odds bit score using O(K) DP storage."""
+        """Return the best complete path's log-odds bit score using O(K) storage.
+
+        A complete path consumes all encoded residues and reaches silent End.
+        The denominator is the background residue product conditional on length.
+        Impossible queries return negative infinity.
+        """
         x, match, insert, delete = self._init_score_rows(seq)
         previous = (match, insert, delete)
         for aa in x:
             previous = self._viterbi_row(aa, previous)
-        return float(max(scores[self.K] for scores in previous))
+        return max(self._terminal_candidates(previous))
 
     def forward(self, seq: str) -> float:
-        """Return the summed paths' log-odds bit score using O(K) DP storage."""
+        """Return all complete paths' log-odds bit score using O(K) storage.
+
+        Sum path probabilities through End, relative to the background residue
+        product conditional on length. Impossible queries return negative infinity.
+        """
         x, match, insert, delete = self._init_score_rows(seq)
         previous = (match, insert, delete)
         for aa in x:
             previous = self._forward_row(aa, previous)
-        return log2sumexp2(scores[self.K] for scores in previous)
+        return log2sumexp2(self._terminal_candidates(previous))
