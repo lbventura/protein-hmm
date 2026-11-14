@@ -3,6 +3,7 @@
 ## Modules and execution
 
 - `protein_profile_hmm.py`: `ProfileHMM.build_from_msa` constructs a profile using counts and pseudocount smoothing; `viterbi` scores the best alignment path, while `forward` sums over allowed paths.
+- `traces.py`: training traces and repair, batched raw counting, probability helpers, and the `State` and `Transition` enums. `N_TRANS = len(Transition)` determines the transition-array width.
 - `amino_acids.py`: canonical amino-acid alphabet, residue encoding, and background frequencies used in scoring.
 - `msa.py`: Stockholm alignment parsing and selection of consensus columns using `symfrac`, the minimum fraction of canonical residues in a column. This measures residue occupancy, not agreement on a single amino acid.
 - `fasta_parser.py`: reads FASTA records as names and protein sequences.
@@ -13,7 +14,7 @@ After following the [development setup](../README.md#set-up-a-development-enviro
 
 ```bash
 python -m protein_profile_hmm.protein_demo
-python -m pytest tests/test_profile_hmm.py tests/test_globins_integration.py
+python -m pytest tests/test_traces.py tests/test_profile_hmm.py tests/test_globins_integration.py
 ```
 
 To download fresh copies of the [datasets](../data/DATASETS.md), overwriting the existing files:
@@ -34,7 +35,7 @@ after all query residues have been consumed.
 - **Insert:** consumes an extra residue without advancing the consensus position.
 - **Delete:** advances past a consensus position without consuming a residue.
 
-The transition array has shape `(K + 1, 12)` and stores twelve types per slot.
+The transition array has shape `(K + 1, N_TRANS)` and stores twelve types per slot.
 Only legal source/destination combinations have nonzero probability:
 
 | Index | Transition | Meaning |
@@ -48,22 +49,22 @@ Only legal source/destination combinations have nonzero probability:
 | 6 | D_k → D_{k+1} | Extend a deletion |
 | 7 | B → M_1 | Begin at the first match (slot 0 only) |
 | 8 | B → D_1 | Begin by deleting the first position (slot 0 only) |
-| 9 | M_K → End | Finish from the last match (`T_ME`, slot K only) |
-| 10 | I_K → End | Finish from the trailing insert (`T_IE`, slot K only) |
-| 11 | D_K → End | Finish from the last deletion (`T_DE`, slot K only) |
+| 9 | M_K → End | Finish from the last match (`Transition.ME`, slot K only) |
+| 10 | I_K → End | Finish from the trailing insert (`Transition.IE`, slot K only) |
+| 11 | D_K → End | Finish from the last deletion (`Transition.DE`, slot K only) |
 
 Outgoing alternatives are normalized together for each source:
 
 | Source | Competing transition types |
 |---|---|
-| Begin | `T_BM`, `T_MI`, `T_BD` at slot 0 |
-| I0 | `T_IM`, `T_II` at slot 0 |
-| M_k, 1 ≤ k < K | `T_MM`, `T_MI`, `T_MD` |
-| I_k, 1 ≤ k < K | `T_IM`, `T_II` |
-| D_k, 1 ≤ k < K | `T_DM`, `T_DD` |
-| M_K | `T_MI`, `T_ME` |
-| I_K | `T_II`, `T_IE` |
-| D_K | `T_DE` (probability 1) |
+| Begin | `Transition.BM`, `Transition.MI`, `Transition.BD` at slot 0 |
+| I0 | `Transition.IM`, `Transition.II` at slot 0 |
+| M_k, 1 ≤ k < K | `Transition.MM`, `Transition.MI`, `Transition.MD` |
+| I_k, 1 ≤ k < K | `Transition.IM`, `Transition.II` |
+| D_k, 1 ≤ k < K | `Transition.DM`, `Transition.DD` |
+| M_K | `Transition.MI`, `Transition.ME` |
+| I_K | `Transition.II`, `Transition.IE` |
+| D_K | `Transition.DE` (probability 1) |
 
 There is no D_K-to-I_K edge. The shared scalar `pseudocount` is finite and
 nonnegative, and smooths only legal alternatives. At zero pseudocount,
@@ -88,7 +89,7 @@ sequences, including the empty sequence.
 
 ## Following profile construction
 
-`build_from_msa` collects observations, adds priors, normalizes the distributions, and stores log probabilities. The counting stage has four responsibilities:
+`build_from_msa` collects observations, adds priors, normalizes the distributions, and stores log probabilities. The counting helpers in `traces.py` have four responsibilities:
 
 1. `_count_alignment` determines match columns from occupancy across all sequences. It also manages the 250,000-cell batch budget; every batch uses the same column assignments.
 2. `_trace_alignment` represents each sequence as a raw path through Begin, Match, Insert, and Delete states. A residue in a match column visits M; a gap visits D. A residue in an insert column visits I; a gap in that column contributes no event.
@@ -164,7 +165,7 @@ For each residue, `_viterbi_row` or `_forward_row` performs three updates:
 Viterbi selects the highest candidate score. Forward sums path weights using
 `np.logaddexp2`, preserving base-2 units and exact unreachable states.
 After consuming the entire query, each scorer adds the corresponding
-`T_ME`, `T_IE`, or `T_DE` exit score to M_K, I_K, or D_K. Viterbi takes the
+`Transition.ME`, `Transition.IE`, or `Transition.DE` exit score to M_K, I_K, or D_K. Viterbi takes the
 maximum of those complete-path candidates; Forward takes their base-2 log-sum.
 Exit costs are applied once, after the last residue, and are excluded from
 partial rows. An empty query follows B → D1 → … → D_K → End.
