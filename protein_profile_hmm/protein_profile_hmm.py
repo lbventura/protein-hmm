@@ -7,8 +7,9 @@ score query sequences against the family.
 
 All emission and transition probabilities are stored in log2 space. Scoring
 returns complete-path log-odds bit scores relative to the product of background
-residue frequencies conditional on query length. Exact zero probabilities
-are represented by negative infinity; impossible queries have score -inf.
+residue frequencies conditional on query length. Paths containing a zero-probability
+transition or emission are impossible under the model. A query scores -inf when
+no possible complete path can emit it.
 
 The allowed transitions are:
 
@@ -333,6 +334,7 @@ def _count_transitions(trace: AlignmentTrace, n_slots: int) -> npt.NDArray[np.in
         Row 1: AC -> B -> M1(A) -> M2(C)
         Row 2: A. -> B -> M1(A) -> D2
 
+    This function counts the transitions between consecutive states in each path.
     The result has shape (3, N_TRANS). Rows identify source positions
     0, 1, and 2; columns identify transition types. Five entries are nonzero:
 
@@ -481,12 +483,9 @@ def _count_alignment(
 
 def _normalise_rows(counts: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Normalize rows, using a uniform distribution for wholly unobserved rows."""
-    # Scale before summing so even large finite pseudocounts remain normalized.
-    maxima = counts.max(axis=1, keepdims=True)
-    scaled = np.divide(counts, maxima, out=np.zeros_like(counts), where=maxima > 0)
-    sums = scaled.sum(axis=1, keepdims=True)
+    sums = counts.sum(axis=1, keepdims=True)
     probs = np.full_like(counts, 1.0 / counts.shape[1])
-    return np.divide(scaled, sums, out=probs, where=sums > 0)
+    return np.divide(counts, sums, out=probs, where=sums > 0)
 
 
 def _normalise_transitions(
@@ -527,8 +526,7 @@ class ProfileHMM:
     Begin chooses between M1, I0, and D1. Terminal M_K/I_K have explicit
     competing exits to silent End, while D_K exits with probability one.
     Direct construction must supply all 12 transition columns and exits.
-    All log-probability arrays are in log2 space, with -inf for exact zeros.
-    Bit scores use the ``BACKGROUND_FREQ`` residue product conditional on length.
+    All log-probability arrays are in log2 space, with bit scores using the ``BACKGROUND_FREQ`` residue product conditional on length.
     """
 
     K: int
@@ -555,13 +553,15 @@ class ProfileHMM:
         Each aligned sequence defines a training path. Adjacent I/D events
         are repaired into Match events before array operations count residues
         and transitions, including one exit per row, from the shared paths.
-        Match emissions and legal outgoing alternatives get the same finite,
+        Match emissions and allowed outgoing alternatives get the same finite,
         nonnegative ``pseudocount`` per alternative; inserts get 20 background-
-        weighted counts in total. At zero pseudocount, wholly unobserved groups
-        are uniform and observed zero alternatives remain impossible. Unused
-        transition cells stay zero. Large alignments use row batches with one
-        global match mask. Probabilities are stored in log2 space, with -inf
-        representing exact zeros.
+        weighted counts in total. With ``pseudocount=0``, match emission and
+        outgoing transition distributions use observed frequencies. If a
+        distribution has no observations, its allowed alternatives receive
+        equal probabilities; otherwise, unobserved alternatives have probability
+        zero. Disallowed transitions always have probability zero.
+        Large alignments use row batches with one global match mask.
+        Probabilities are stored in log2 space.
         """
         if not np.isfinite(pseudocount) or pseudocount < 0:
             raise ValueError("pseudocount must be finite and nonnegative")
