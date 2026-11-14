@@ -15,10 +15,13 @@ from protein_profile_hmm.protein_profile_hmm import (
     T_BD,
     T_BM,
     T_DD,
+    T_DE,
     T_DM,
+    T_IE,
     T_II,
     T_IM,
     T_MD,
+    T_ME,
     T_MI,
     T_MM,
     AlignmentTrace,
@@ -98,7 +101,6 @@ def test_trace_alignment_keeps_begin_for_rows_with_no_state_events() -> None:
     assert trace.state.tolist() == [State.BEGIN, State.BEGIN]
     assert trace.position.tolist() == [0, 0]
     assert trace.residue.tolist() == [-1, -1]
-    np.testing.assert_array_equal(_count_transitions(trace, n_slots=1), np.zeros((1, N_TRANS)))
 
 
 def _trace_events(trace: AlignmentTrace) -> list[tuple[int, State, int, int]]:
@@ -286,6 +288,12 @@ def test_repair_trace_matches_sequential_rule_across_sequences() -> None:
                 assert destination[2] == source[2] + (destination[1] != State.INSERT)
 
 
+def test_boundary_count_transitions_rejects_profiles_without_match_positions() -> None:
+    trace = _trace_alignment(encode_rows(["..", "--"]), np.array([False, False]))
+    with pytest.raises(ValueError, match="at least one match position"):
+        _count_transitions(trace, n_slots=1)
+
+
 @pytest.mark.parametrize(
     ("row", "columns", "edge"),
     [
@@ -380,6 +388,7 @@ def test_count_transitions_counts_matches_and_deletions_within_each_row() -> Non
     expected = np.zeros((3, N_TRANS), dtype=np.int64)
     expected[0, T_BM] = 2
     expected[1, [T_MM, T_MD]] = 1
+    expected[2, [T_ME, T_DE]] = 1
     np.testing.assert_array_equal(counts, expected)
 
 
@@ -395,6 +404,7 @@ def test_count_transitions_skips_insert_gaps_and_counts_insert_loops() -> None:
     expected = np.zeros((3, N_TRANS), dtype=np.int64)
     expected[0, T_BM] = 3
     expected[1, [T_MI, T_II, T_IM, T_MM, T_MD]] = 1
+    expected[2, [T_ME, T_DE]] = [2, 1]
     np.testing.assert_array_equal(counts, expected)
 
 
@@ -410,6 +420,7 @@ def test_count_transitions_after_delete_insert_repair() -> None:
     expected = np.zeros((4, N_TRANS), dtype=np.int64)
     expected[0, T_BM] = 3
     expected[1:3, T_MM] = 3
+    expected[3, T_ME] = 3
     np.testing.assert_array_equal(counts, expected)
 
 
@@ -427,6 +438,7 @@ def test_count_transitions_counts_leading_and_trailing_insert_loops() -> None:
     expected[1, T_MM] = 2
     expected[1, T_DM] = 1
     expected[2, [T_MI, T_II]] = 1
+    expected[2, [T_ME, T_IE]] = [2, 1]
     np.testing.assert_array_equal(counts, expected)
 
 
@@ -444,6 +456,7 @@ def test_count_transitions_after_insert_delete_repair() -> None:
     expected[1, [T_MI, T_IM, T_MM]] = 1
     expected[2, [T_MD, T_MM]] = 1
     expected[3, [T_DM, T_MM]] = 1
+    expected[4, T_ME] = 2
     np.testing.assert_array_equal(counts, expected)
 
 
@@ -459,6 +472,7 @@ def test_count_transitions_after_terminal_delete_insert_repair() -> None:
     expected[0, T_BM] = 2
     expected[1, T_MM] = 2
     expected[2, T_MI] = 1
+    expected[2, [T_ME, T_IE]] = 1
     np.testing.assert_array_equal(counts, expected)
 
 
@@ -473,6 +487,7 @@ def test_count_transitions_handles_a_single_match_position() -> None:
     expected = np.zeros((2, N_TRANS), dtype=np.int64)
     expected[0, T_BM] = 1
     expected[0, T_BD] = 2
+    expected[1, [T_ME, T_DE]] = [1, 2]
     np.testing.assert_array_equal(counts, expected)
 
 
@@ -488,6 +503,7 @@ def test_count_profile_assigns_match_positions_and_boundary_insert_slots() -> No
     expected_trans = np.zeros((2, N_TRANS), dtype=np.int64)
     expected_trans[0, [T_MI, T_IM, T_BD, T_BM]] = 1
     expected_trans[1, T_MI] = 1
+    expected_trans[1, [T_ME, T_IE, T_DE]] = 1
     np.testing.assert_array_equal(match, expected_match)
     np.testing.assert_array_equal(insert, expected_insert)
     np.testing.assert_array_equal(trans, expected_trans)
@@ -506,6 +522,7 @@ def test_count_profile_accumulates_counts_beyond_the_residue_dtype_range() -> No
     expected_trans = np.zeros((3, N_TRANS), dtype=np.int64)
     expected_trans[0, T_BM] = 300
     expected_trans[1, [T_MM, T_MI, T_II, T_IM]] = 150
+    expected_trans[2, T_ME] = 300
     np.testing.assert_array_equal(match, expected_match)
     np.testing.assert_array_equal(insert, expected_insert)
     np.testing.assert_array_equal(trans, expected_trans)
@@ -526,6 +543,7 @@ def test_count_alignment_uses_one_global_mask_and_accumulates_raw_counts(
     expected_trans = np.zeros((2, N_TRANS), dtype=np.int64)
     expected_trans[0, [T_MI, T_IM, T_BD, T_BM]] = 1
     expected_trans[1, T_MI] = 1
+    expected_trans[1, [T_ME, T_IE, T_DE]] = 1
     np.testing.assert_array_equal(match, expected_match)
     np.testing.assert_array_equal(insert, expected_insert)
     np.testing.assert_array_equal(trans, expected_trans)
@@ -546,6 +564,7 @@ def test_count_alignment_repairs_emissions_and_transitions_together(rows: list[s
     expected_trans = np.zeros((4, N_TRANS), dtype=np.int64)
     expected_trans[0, T_BM] = 3
     expected_trans[1:3, T_MM] = 3
+    expected_trans[3, T_ME] = 3
     np.testing.assert_array_equal(match, expected_match)
     np.testing.assert_array_equal(insert, np.zeros((4, 20), dtype=np.int64))
     np.testing.assert_array_equal(trans, expected_trans)
@@ -613,6 +632,7 @@ def test_repair_counts_preserve_large_positions_and_observation_totals() -> None
     expected_trans = np.zeros((131, N_TRANS), dtype=np.int64)
     expected_trans[0, T_BM] = 300
     expected_trans[1:130, T_MM] = 300
+    expected_trans[130, T_ME] = 300
     np.testing.assert_array_equal(match, expected_match)
     np.testing.assert_array_equal(insert, np.zeros((131, 20), dtype=np.int64))
     np.testing.assert_array_equal(trans, expected_trans)
@@ -621,7 +641,7 @@ def test_repair_counts_preserve_large_positions_and_observation_totals() -> None
 @pytest.mark.parametrize("empty", [False, True])
 def test_normalise_rows_handles_zero_and_small_counts_without_mutating_input(empty: bool) -> None:
     counts = np.array([[1.0, 3.0], [0.0, 0.0], [1e-200, 3e-200]])
-    expected = np.array([[0.25, 0.75], [0.0, 0.0], [0.25, 0.75]])
+    expected = np.array([[0.25, 0.75], [0.5, 0.5], [0.25, 0.75]])
     if empty:
         counts, expected = counts[:0], expected[:0]
     original = counts.copy()
@@ -631,22 +651,26 @@ def test_normalise_rows_handles_zero_and_small_counts_without_mutating_input(emp
     assert actual.dtype == np.float64
 
 
+def _allowed_transition_groups(K: int) -> list[tuple[int, list[int]]]:
+    groups = [(0, [T_BM, T_MI, T_BD]), (0, [T_IM, T_II])]
+    for k in range(1, K):
+        groups.extend([(k, [T_MM, T_MI, T_MD]), (k, [T_IM, T_II]), (k, [T_DM, T_DD])])
+    return [*groups, (K, [T_MI, T_ME]), (K, [T_II, T_IE]), (K, [T_DE])]
+
+
 @pytest.mark.parametrize("K", [1, 3])
 @pytest.mark.parametrize("scale", [0.0, 1.0])
-def test_normalise_transitions_preserves_boundary_rules_and_unused_cells(
-    K: int, scale: float
+@pytest.mark.parametrize("pseudocount", [0.0, 0.1, 1.0])
+def test_normalise_transitions_normalises_only_allowed_groups(
+    K: int, scale: float, pseudocount: float
 ) -> None:
-    counts = np.tile([2.0, 3, 5, 7, 11, 13, 17, 19, 23], (K + 1, 1)) * scale
+    counts = np.tile(np.arange(1, N_TRANS + 1, dtype=float), (K + 1, 1)) * scale
     original = counts.copy()
-    expected = (
-        np.array(
-            [[2, 1, 5, 7 / 18, 11 / 18, 13, 17, 19 / 42, 23 / 42]]
-            + [[0.2, 0.3, 0.5, 7 / 18, 11 / 18, 13 / 30, 17 / 30, 19, 23]] * (K - 1)
-            + [[2, 1, 5, 7, 1, 13, 17, 19, 23]]
-        )
-        * scale
-    )
-    actual = _normalise_transitions(counts)
+    expected = np.zeros_like(counts)
+    for k, transitions in _allowed_transition_groups(K):
+        values = counts[k, transitions] + pseudocount
+        expected[k, transitions] = values / values.sum() if values.sum() else 1 / len(values)
+    actual = _normalise_transitions(counts, pseudocount)
     np.testing.assert_allclose(actual, expected)
     np.testing.assert_array_equal(counts, original)
 
@@ -681,13 +705,15 @@ def test_build_from_msa_handles_all_delete_paths_without_pseudocounts(
     # At symfrac=0 even empty columns are match positions: both paths are B -> D1 -> D2.
     hmm = _build(["..", "--"], symfrac=0.0, pseudocount=0.0)
     assert hmm.K == 2
-    log_floor = np.log2(1e-300)
-    np.testing.assert_array_equal(hmm.log_match_emit, np.full((2, 20), log_floor))
+    np.testing.assert_allclose(hmm.log_match_emit, np.full((2, 20), np.log2(1 / 20)))
     np.testing.assert_allclose(hmm.log_insert_emit, np.tile(np.log2(BACKGROUND_FREQ), (3, 1)))
-    expected_trans = np.full((3, N_TRANS), log_floor)
-    expected_trans[0, T_BD] = 0.0
-    expected_trans[1, T_DD] = 0.0
-    np.testing.assert_array_equal(hmm.log_trans, expected_trans)
+    assert hmm.log_trans[0, T_BD] == 0
+    assert hmm.log_trans[1, T_DD] == 0
+    assert hmm.log_trans[2, T_DE] == 0
+    for method in (hmm.viterbi, hmm.forward):
+        assert method("") == 0
+        for seq in ("A", "AA", "C"):
+            assert method(seq) == NEG_INF
 
 
 @pytest.mark.parametrize("rows", [["AC", "A"], ["A", "AC"], ["AC", "G", "EYY"]])
@@ -805,10 +831,8 @@ def test_build_from_msa_handles_leading_insert_match_and_delete_paths(
     np.testing.assert_allclose(2 ** hmm.log_match_emit[:, AA_INDEX["A"]], [3 / 22, 1 / 23])
     np.testing.assert_allclose(2 ** hmm.log_match_emit[:, AA_INDEX["C"]], [1 / 22, 4 / 23])
 
-    # One direct B->M1 and one B->D1; the leading insert is counted separately.
-    # With one pseudocount each, Begin's counts [2, 2] give [1/2, 1/2].
-    np.testing.assert_allclose(2 ** hmm.log_trans[0, [T_BM, T_BD]], [1 / 2, 1 / 2])
-    np.testing.assert_allclose(2 ** hmm.log_trans[0, T_MI], 1)  # Singleton group.
+    # Begin has one observation per alternative and one pseudocount each.
+    np.testing.assert_allclose(2 ** hmm.log_trans[0, [T_BM, T_MI, T_BD]], [1 / 3] * 3)
     # I0->M1 and D1->M2 each occur once; their alternative loops occur zero times.
     np.testing.assert_allclose(2 ** hmm.log_trans[0, [T_IM, T_II]], [2 / 3, 1 / 3])
     np.testing.assert_allclose(2 ** hmm.log_trans[1, [T_DM, T_DD]], [2 / 3, 1 / 3])
@@ -897,8 +921,8 @@ def test_init_score_rows_handles_filtered_queries_and_single_match_profiles(
     assert encoded == expected
     np.testing.assert_array_equal(match, [0.0, NEG_INF])
     np.testing.assert_array_equal(insert, [NEG_INF, NEG_INF])
-    # Begin->D1 has probability 1/4, regardless of query length.
-    np.testing.assert_array_equal(delete, [NEG_INF, -2.0])
+    # Begin->D1 has probability 1/5, regardless of query length.
+    np.testing.assert_array_equal(delete, [NEG_INF, np.log2(1 / 5)])
 
 
 def test_init_score_rows_encodes_query_and_initialises_scores() -> None:
@@ -915,16 +939,16 @@ def test_init_score_rows_encodes_query_and_initialises_scores() -> None:
     np.testing.assert_array_equal(match_scores, [0.0, NEG_INF, NEG_INF, NEG_INF])
     np.testing.assert_array_equal(insert_scores, np.full(4, NEG_INF))
 
-    # Without consuming residues, B->D1->D2->D3 uses probabilities 1/5, 1/2, 1/3.
+    # Without consuming residues, B->D1->D2->D3 uses probabilities 1/6, 1/2, 1/3.
     assert delete_scores[0] == NEG_INF
-    np.testing.assert_allclose(delete_scores[1:], np.log2([1 / 5, 1 / 10, 1 / 30]))
+    np.testing.assert_allclose(delete_scores[1:], np.log2([1 / 6, 1 / 12, 1 / 36]))
 
 
 @pytest.mark.parametrize("method", ["viterbi", "forward"])
 def test_scoring_uses_begin_probability_for_first_match(method: str) -> None:
     hmm = _build(["A"] * 3)
-    # The only complete path for one residue is B->M1(A): Begin contributes 4/5.
-    expected = np.log2((4 / 5) * (4 / 23) / BACKGROUND_FREQ[AA_INDEX["A"]])
+    # The only complete path is B->M1(A)->End, including entry and exit.
+    expected = np.log2((4 / 6) * (4 / 23) * (4 / 5) / BACKGROUND_FREQ[AA_INDEX["A"]])
     np.testing.assert_allclose(getattr(hmm, method)("A"), expected)
 
 
@@ -932,7 +956,7 @@ def test_scoring_uses_begin_probability_for_first_match(method: str) -> None:
 def test_scoring_preserves_initial_deletion_path(method: str) -> None:
     hmm = _build(["AGGCE", "A..CE", "A...E"])
     # An empty query has exactly one path: B->D1->D2->D3, counted once.
-    np.testing.assert_allclose(getattr(hmm, method)(""), np.log2((1 / 5) * (1 / 2) * (1 / 3)))
+    np.testing.assert_allclose(getattr(hmm, method)(""), np.log2((1 / 6) * (1 / 2) * (1 / 3)))
 
 
 @pytest.mark.parametrize("method", ["viterbi", "forward"])
@@ -941,9 +965,9 @@ def test_scoring_one_residue_includes_leading_deletion_costs(method: str) -> Non
     background_a = BACKGROUND_FREQ[AA_INDEX["A"]]
     # All complete paths for A: match at one position and delete the other two.
     path_odds = [
-        (4 / 5) * (4 / 23 / background_a) * (1 / 3) * (1 / 3),  # B->M1->D2->D3
-        (1 / 5) * (1 / 2) * (1 / 22 / background_a) * (1 / 5),  # B->D1->M2->D3
-        (1 / 5) * (1 / 2) * (2 / 3) * (1 / 23 / background_a),  # B->D1->D2->M3
+        (4 / 6) * (4 / 23 / background_a) * (1 / 3) * (1 / 3),  # B->M1->D2->D3
+        (1 / 6) * (1 / 2) * (1 / 22 / background_a) * (1 / 5),  # B->D1->M2->D3
+        (1 / 6) * (1 / 2) * (2 / 3) * (1 / 23 / background_a) * (4 / 5),  # B->D1->D2->M3->End
     ]
     expected = np.log2(max(path_odds) if method == "viterbi" else sum(path_odds))
     np.testing.assert_allclose(getattr(hmm, method)("A"), expected)
@@ -956,9 +980,9 @@ def test_scoring_retains_leading_insert_paths(method: str) -> None:
     match_a = (4 / 23) / BACKGROUND_FREQ[AA_INDEX["A"]]
     # Inserts emit at background frequencies. Match each of GGA's residues in turn.
     path_odds = [
-        (4 / 5) * match_g,  # B->M1(G)->I1(G)->I1(A)
-        (1 / 2) * match_g,  # B->I0(G)->M1(G)->I1(A)
-        (1 / 2) * (1 / 2) * match_a,  # B->I0(G)->I0(G)->M1(A)
+        (4 / 6) * match_g * (1 / 5) * (1 / 2) * (1 / 2),  # B->M1->I1->I1->End
+        (1 / 6) * (1 / 2) * match_g * (1 / 5) * (1 / 2),  # B->I0->M1->I1->End
+        (1 / 6) * (1 / 2) * (1 / 2) * match_a * (4 / 5),  # B->I0->I0->M1->End
     ]
     expected = np.log2(max(path_odds) if method == "viterbi" else sum(path_odds))
     np.testing.assert_allclose(getattr(hmm, method)("GGA"), expected)
@@ -1005,15 +1029,17 @@ def test_viterbi_row_consumes_first_residue() -> None:
     background_a = BACKGROUND_FREQ[AA_INDEX["A"]]
     # Each Match has one reachable path after consuming the first A.
     match_weights = [
-        (4 / 5) * (4 / 23 / background_a),  # B -> M1(A)
-        (1 / 5) * (1 / 2) * (1 / 22 / background_a),  # B -> D1 -> M2(A)
-        (1 / 5) * (1 / 2) * (2 / 3) * (1 / 23 / background_a),  # B -> D1 -> D2 -> M3(A)
+        (4 / 6) * (4 / 23 / background_a),  # B -> M1(A)
+        (1 / 6) * (1 / 2) * (1 / 22 / background_a),  # B -> D1 -> M2(A)
+        (1 / 6) * (1 / 2) * (2 / 3) * (1 / 23 / background_a),  # B -> D1 -> D2 -> M3(A)
     ]
     assert match[0] == NEG_INF
     np.testing.assert_allclose(match[1:], np.log2(match_weights), atol=1e-12, rtol=0)
 
-    # Only I0 can emit before a Match; its transition and emission odds are 1.
-    np.testing.assert_array_equal(insert, [0.0, NEG_INF, NEG_INF, NEG_INF])
+    # Only I0 can emit before a Match; Begin->I0 contributes 1/6.
+    np.testing.assert_allclose(
+        insert, [np.log2(1 / 6), NEG_INF, NEG_INF, NEG_INF], atol=1e-12, rtol=0
+    )
 
     # The best deletion paths extend M1(A) -> D2 -> D3, with probability 1/3 per edge.
     np.testing.assert_array_equal(delete[:2], [NEG_INF, NEG_INF])
@@ -1057,19 +1083,13 @@ def test_init_score_rows_preserves_blocked_deletion_prefix() -> None:
     np.testing.assert_array_equal(match, [0, NEG_INF, NEG_INF, NEG_INF])
     np.testing.assert_array_equal(insert, np.full(4, NEG_INF))
     # Initialization adds transitions without applying a floor or threshold.
-    np.testing.assert_array_equal(delete, [NEG_INF, NEG_INF, 2 * NEG_INF, 3 * NEG_INF])
+    np.testing.assert_array_equal(delete, [NEG_INF, NEG_INF, NEG_INF, NEG_INF])
 
 
-@pytest.mark.parametrize("method", ["viterbi", "forward"])
-@pytest.mark.parametrize(("seq", "expected"), [("", 0.0), ("A", -1.0), ("AA", -3.0)])
-def test_scoring_zero_match_profile_uses_only_insert_zero(
-    method: str, seq: str, expected: float
-) -> None:
-    hmm = _background_profile(0)
-    # B -> I0 has weight 1/2, and each subsequent I0 -> I0 has weight 1/4.
-    hmm.log_trans[0, T_MI] = -1.0
-    hmm.log_trans[0, T_II] = -2.0
-    assert getattr(hmm, method)(seq) == expected
+@pytest.mark.parametrize("K", [0, -1])
+def test_boundary_constructor_rejects_profiles_without_match_positions(K: int) -> None:
+    with pytest.raises(ValueError, match="at least one match position"):
+        ProfileHMM(K, np.empty((0, 20)), np.empty((1, 20)), np.empty((1, N_TRANS)), np.zeros(20))
 
 
 @pytest.mark.parametrize("method", ["viterbi", "forward"])
@@ -1077,6 +1097,7 @@ def test_scoring_combines_two_tied_complete_paths(method: str) -> None:
     hmm = _background_profile(1)
     hmm.log_trans[0, [T_BM, T_MI, T_IM]] = -1.0
     hmm.log_trans[1, T_MI] = -1.0
+    hmm.log_trans[1, [T_ME, T_IE]] = 0.0
     # AA has exactly two complete paths, each with weight 1/4:
     # B -> M1(A) -> I1(A), and B -> I0(A) -> M1(A).
     expected = -2.0 if method == "viterbi" else -1.0
@@ -1092,6 +1113,7 @@ def test_scoring_merges_match_insert_and_delete_predecessors(method: str) -> Non
     hmm.log_trans[1, T_DM] = 0.0
     hmm.log_trans[2, [T_MM, T_MI]] = -1.0
     hmm.log_trans[2, [T_IM, T_DM]] = 0.0
+    hmm.log_trans[3, T_ME] = 0.0
     # AAA has exactly three complete paths, all ending at M3:
     # B -> M1(A) -> M2(A) -> M3(A):       1/2 * 1/2 * 1/2 = 1/8
     # B -> D1 -> M2(A) -> I2(A) -> M3(A): 1/2 * 1 * 1/2 * 1 = 1/4
@@ -1109,17 +1131,44 @@ def test_scoring_blocked_paths_remain_unreachable(method: str) -> None:
     hmm.log_trans[0, T_BM] = -1.0
     hmm.log_trans[1, T_MD] = -2.0
     hmm.log_trans[2, T_DD] = -3.0
+    # A path cannot finish until its explicit terminal exit is opened.
+    assert getattr(hmm, method)("A") == NEG_INF
+    hmm.log_trans[3, T_DE] = 0.0
     assert getattr(hmm, method)("A") == -6.0
     assert getattr(hmm, method)("AA") == NEG_INF
 
 
 @pytest.mark.parametrize("method", ["viterbi", "forward"])
-@pytest.mark.parametrize("entry", [NEG_INF, NEG_INF / 2, np.nextafter(NEG_INF / 2, np.inf)])
-def test_scoring_applies_emitting_state_reachability_threshold(method: str, entry: float) -> None:
+@pytest.mark.parametrize("entry", [NEG_INF, -1e30, -2.0])
+def test_scoring_preserves_first_match_reachability(method: str, entry: float) -> None:
     hmm = _background_profile(1)
     hmm.log_trans[0, T_BM] = entry
-    expected = entry if entry > NEG_INF / 2 else NEG_INF
-    assert getattr(hmm, method)("A") == expected
+    hmm.log_trans[1, T_ME] = 0.0
+    assert getattr(hmm, method)("A") == entry
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+@pytest.mark.parametrize("transition_score", [NEG_INF, -1e30, -2.0])
+def test_scoring_preserves_internal_match_reachability(
+    method: str, transition_score: float
+) -> None:
+    hmm = _background_profile(2)
+    # The only complete path is B -> M1(A) -> M2(A) -> End.
+    hmm.log_trans[0, T_BM] = 0.0
+    hmm.log_trans[1, T_MM] = transition_score
+    hmm.log_trans[2, T_ME] = 0.0
+    assert getattr(hmm, method)("AA") == transition_score
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+@pytest.mark.parametrize("transition_score", [NEG_INF, -1e30, -2.0])
+def test_scoring_preserves_insert_reachability(method: str, transition_score: float) -> None:
+    hmm = _background_profile(1)
+    # The only complete path is B -> M1(A) -> I1(A) -> End.
+    hmm.log_trans[0, T_BM] = 0.0
+    hmm.log_trans[1, T_MI] = transition_score
+    hmm.log_trans[1, T_IE] = 0.0
+    assert getattr(hmm, method)("AA") == transition_score
 
 
 @pytest.mark.parametrize("method", ["viterbi", "forward"])
@@ -1127,3 +1176,104 @@ def test_scoring_without_pseudocounts_preserves_observed_match_path(method: str)
     hmm = _build(["AC", "AC"], pseudocount=0.0)
     expected = -np.log2(BACKGROUND_FREQ[AA_INDEX["A"]] * BACKGROUND_FREQ[AA_INDEX["C"]])
     np.testing.assert_allclose(getattr(hmm, method)("AC"), expected, atol=1e-12, rtol=0)
+
+
+@pytest.mark.parametrize("pseudocount", [-1.0, np.nan, np.inf, -np.inf])
+def test_boundary_rejects_invalid_pseudocount(pseudocount: float) -> None:
+    with pytest.raises(ValueError, match="pseudocount must be finite and nonnegative"):
+        _build(["A"], pseudocount=pseudocount)
+
+
+@pytest.mark.parametrize("pseudocount", [0.0, 0.1, 1.0])
+def test_boundary_emissions_normalise_with_unobserved_states(pseudocount: float) -> None:
+    with np.errstate(all="raise"):
+        hmm = _build(["A.", "A."], symfrac=0.0, pseudocount=pseudocount)
+    for emissions in (hmm.log_match_emit, hmm.log_insert_emit):
+        np.testing.assert_allclose((2**emissions).sum(axis=1), 1)
+
+
+@pytest.mark.parametrize("pseudocount", [0.0, 0.1, 1.0])
+def test_boundary_transitions_normalise_only_allowed_groups(pseudocount: float) -> None:
+    with np.errstate(all="raise"):
+        hmm = _build(["A.", "A."], symfrac=0.0, pseudocount=pseudocount)
+    allowed = np.zeros_like(hmm.log_trans, dtype=bool)
+    for k, transitions in _allowed_transition_groups(hmm.K):
+        np.testing.assert_allclose((2 ** hmm.log_trans[k, transitions]).sum(), 1)
+        allowed[k, transitions] = True
+    assert np.all(hmm.log_trans[~allowed] == NEG_INF)
+    assert hmm.log_trans[hmm.K, T_DE] == 0
+
+
+def test_boundary_zero_pseudocount_uses_uniform_fallback_and_exact_zeros() -> None:
+    hmm = _build(["A.", "A."], symfrac=0.0, pseudocount=0)
+    # The unvisited terminal Match and I0 use uniform distributions.
+    np.testing.assert_allclose(2 ** hmm.log_match_emit[1], 1 / 20)
+    np.testing.assert_allclose(2 ** hmm.log_trans[0, [T_IM, T_II]], [0.5, 0.5])
+    assert hmm.log_match_emit[0, AA_INDEX["C"]] == NEG_INF
+    assert hmm.log_trans[0, T_MI] == NEG_INF
+
+
+@pytest.mark.parametrize("batch_cells", [1, 16, 250_000])
+def test_boundary_counts_one_repaired_exit_per_alignment_row(
+    monkeypatch: pytest.MonkeyPatch, batch_cells: int
+) -> None:
+    monkeypatch.setattr(profile_module, "_MAX_BATCH_CELLS", batch_cells)
+    # A.G. repairs terminal D2/I2 to M2; A.GG retains one I2; .... ends at D2.
+    rows = ["A.G.", "A.GG", "....", "AC..", "AC..", "AC.."]
+    _, _, counts = _count_alignment(rows, symfrac=0.5)
+    np.testing.assert_array_equal(counts[-1, [T_ME, T_IE, T_DE]], [4, 1, 1])
+    assert counts[:, [T_ME, T_IE, T_DE]].sum() == len(rows)
+    assert not counts[:-1, [T_ME, T_IE, T_DE]].any()
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+def test_boundary_zero_emissions_and_exits_are_impossible_without_warnings(method: str) -> None:
+    with np.errstate(all="raise"):
+        hmm = _build(["A"], pseudocount=0)
+        assert getattr(hmm, method)("C") == NEG_INF
+        hmm.log_trans[1, T_ME] = NEG_INF
+        assert getattr(hmm, method)("A") == NEG_INF
+        assert getattr(hmm, method)("") == NEG_INF
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+def test_boundary_filtered_query_uses_complete_empty_path(method: str) -> None:
+    hmm = _build(["AGGCE", "A..CE", "A...E"])
+    assert getattr(hmm, method)("x-b.z") == pytest.approx(np.log2(1 / 36))
+
+
+@pytest.mark.parametrize("method", ["viterbi", "forward"])
+@pytest.mark.parametrize("exit_probability", [0.1, 0.9])
+def test_boundary_exit_weights_change_winning_endpoint(
+    method: str, exit_probability: float
+) -> None:
+    hmm = _background_profile(2)
+    hmm.log_trans[0, [T_BM, T_MI, T_BD]] = np.log2([0.3, 0.1, 0.6])
+    hmm.log_trans[1, [T_MM, T_MI, T_MD]] = np.log2([0.1, 0.1, 0.8])
+    hmm.log_trans[1, [T_DM, T_DD]] = np.log2([0.8, 0.2])
+    hmm.log_trans[2, [T_MI, T_ME]] = np.log2([1 - exit_probability, exit_probability])
+    hmm.log_trans[2, T_DE] = 0
+    # B->M1(A)->D2->End has weight .24. B->D1->M2(A)->End has weight .48*p.
+    # Without the exit, M2 always wins; with it, the winner depends on p.
+    paths = [0.24, 0.48 * exit_probability]
+    expected = max(paths) if method == "viterbi" else sum(paths)
+    assert getattr(hmm, method)("A") == pytest.approx(np.log2(expected))
+
+
+def test_boundary_total_sequence_mass_has_geometric_insertion_tail() -> None:
+    """One match followed by optional inserts gives P(A**n) = 2**(-n), n >= 1."""
+    hmm = _background_profile(1)
+    hmm.log_match_emit[:] = NEG_INF
+    hmm.log_insert_emit[:] = NEG_INF
+    hmm.log_match_emit[:, AA_INDEX["A"]] = 0
+    hmm.log_insert_emit[:, AA_INDEX["A"]] = 0
+    hmm.log_trans[0, T_BM] = 0  # Always start at M1, emitting A.
+    # At M1 and I1, exit or emit another A with equal probability.
+    hmm.log_trans[1, [T_MI, T_ME, T_II, T_IE]] = np.log2(0.5)
+
+    limit = 8
+    log_background_a = np.log2(BACKGROUND_FREQ[AA_INDEX["A"]])
+    mass = sum(2 ** (hmm.forward("A" * n) + n * log_background_a) for n in range(limit + 1))
+    # Undo the background odds above. The omitted geometric tail is exactly 2**(-limit).
+    assert mass == pytest.approx(1 - 2 ** (-limit), rel=0, abs=1e-14)
+    assert hmm.forward("AACAA") == NEG_INF
