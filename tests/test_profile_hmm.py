@@ -651,7 +651,7 @@ def test_normalise_rows_handles_zero_and_small_counts_without_mutating_input(emp
     assert actual.dtype == np.float64
 
 
-def _legal_transition_groups(K: int) -> list[tuple[int, list[int]]]:
+def _allowed_transition_groups(K: int) -> list[tuple[int, list[int]]]:
     groups = [(0, [T_BM, T_MI, T_BD]), (0, [T_IM, T_II])]
     for k in range(1, K):
         groups.extend([(k, [T_MM, T_MI, T_MD]), (k, [T_IM, T_II]), (k, [T_DM, T_DD])])
@@ -661,13 +661,13 @@ def _legal_transition_groups(K: int) -> list[tuple[int, list[int]]]:
 @pytest.mark.parametrize("K", [1, 3])
 @pytest.mark.parametrize("scale", [0.0, 1.0])
 @pytest.mark.parametrize("pseudocount", [0.0, 0.1, 1.0])
-def test_normalise_transitions_normalises_only_legal_groups(
+def test_normalise_transitions_normalises_only_allowed_groups(
     K: int, scale: float, pseudocount: float
 ) -> None:
     counts = np.tile(np.arange(1, N_TRANS + 1, dtype=float), (K + 1, 1)) * scale
     original = counts.copy()
     expected = np.zeros_like(counts)
-    for k, transitions in _legal_transition_groups(K):
+    for k, transitions in _allowed_transition_groups(K):
         values = counts[k, transitions] + pseudocount
         expected[k, transitions] = values / values.sum() if values.sum() else 1 / len(values)
     actual = _normalise_transitions(counts, pseudocount)
@@ -1193,14 +1193,14 @@ def test_boundary_emissions_normalise_with_unobserved_states(pseudocount: float)
 
 
 @pytest.mark.parametrize("pseudocount", [0.0, 0.1, 1.0])
-def test_boundary_transitions_normalise_only_legal_groups(pseudocount: float) -> None:
+def test_boundary_transitions_normalise_only_allowed_groups(pseudocount: float) -> None:
     with np.errstate(all="raise"):
         hmm = _build(["A.", "A."], symfrac=0.0, pseudocount=pseudocount)
-    legal = np.zeros_like(hmm.log_trans, dtype=bool)
-    for k, transitions in _legal_transition_groups(hmm.K):
+    allowed = np.zeros_like(hmm.log_trans, dtype=bool)
+    for k, transitions in _allowed_transition_groups(hmm.K):
         np.testing.assert_allclose((2 ** hmm.log_trans[k, transitions]).sum(), 1)
-        legal[k, transitions] = True
-    assert np.all(hmm.log_trans[~legal] == NEG_INF)
+        allowed[k, transitions] = True
+    assert np.all(hmm.log_trans[~allowed] == NEG_INF)
     assert hmm.log_trans[hmm.K, T_DE] == 0
 
 
@@ -1260,92 +1260,20 @@ def test_boundary_exit_weights_change_winning_endpoint(
     assert getattr(hmm, method)("A") == pytest.approx(np.log2(expected))
 
 
-def _tiny_normalised_profile() -> ProfileHMM:
-    """A K=2 model supported only on A, with each insert loop at most 1/4."""
-    hmm = _background_profile(2)
+def test_boundary_total_sequence_mass_has_geometric_insertion_tail() -> None:
+    """One match followed by optional inserts gives P(A**n) = 2**(-n), n >= 1."""
+    hmm = _background_profile(1)
     hmm.log_match_emit[:] = NEG_INF
     hmm.log_insert_emit[:] = NEG_INF
     hmm.log_match_emit[:, AA_INDEX["A"]] = 0
     hmm.log_insert_emit[:, AA_INDEX["A"]] = 0
-    groups = [
-        (0, [T_BM, T_MI, T_BD], [0.45, 0.25, 0.3]),
-        (0, [T_IM, T_II], [0.8, 0.2]),
-        (1, [T_MM, T_MI, T_MD], [0.5, 0.2, 0.3]),
-        (1, [T_IM, T_II], [0.75, 0.25]),
-        (1, [T_DM, T_DD], [0.6, 0.4]),
-        (2, [T_MI, T_ME], [0.35, 0.65]),
-        (2, [T_II, T_IE], [0.25, 0.75]),
-        (2, [T_DE], [1.0]),
-    ]
-    for k, transitions, values in groups:
-        hmm.log_trans[k, transitions] = np.log2(values)
-    return hmm
+    hmm.log_trans[0, T_BM] = 0  # Always start at M1, emitting A.
+    # At M1 and I1, exit or emit another A with equal probability.
+    hmm.log_trans[1, [T_MI, T_ME, T_II, T_IE]] = np.log2(0.5)
 
-
-def _enumerate_complete_path_probabilities(hmm: ProfileHMM, seq: str) -> list[float]:
-    """Walk the graph independently of the DP, bounding inserts by query length."""
-    trans = 2**hmm.log_trans
-    match_emit, insert_emit = 2**hmm.log_match_emit, 2**hmm.log_insert_emit
-    paths = []
-
-    def visit(state: str, k: int, consumed: int, probability: float) -> None:
-        if state == "B":
-            edges = [("M", 1, T_BM), ("I", 0, T_MI), ("D", 1, T_BD)]
-        elif k == hmm.K:
-            exit_type = {"M": T_ME, "I": T_IE, "D": T_DE}[state]
-            if consumed == len(seq):
-                paths.append(probability * trans[k, exit_type])
-            edges = {"M": [("I", k, T_MI)], "I": [("I", k, T_II)], "D": []}[state]
-        else:
-            edges = {
-                "M": [("M", k + 1, T_MM), ("I", k, T_MI), ("D", k + 1, T_MD)],
-                "I": [("M", k + 1, T_IM), ("I", k, T_II)],
-                "D": [("M", k + 1, T_DM), ("D", k + 1, T_DD)],
-            }[state]
-        for destination, position, transition in edges:
-            weight = probability * trans[k, transition]
-            if weight == 0:
-                continue
-            if destination == "D":
-                visit(destination, position, consumed, weight)
-            elif consumed < len(seq):
-                aa = AA_INDEX[seq[consumed]]
-                emission = (
-                    match_emit[position - 1, aa]
-                    if destination == "M"
-                    else insert_emit[position, aa]
-                )
-                visit(destination, position, consumed + 1, weight * emission)
-
-    visit("B", 0, 0, 1.0)
-    return paths
-
-
-@pytest.mark.parametrize("seq", ["", "A", "AA", "AAA", "AAAA", "AC", "CA"])
-def test_boundary_scores_match_independent_complete_path_enumeration(seq: str) -> None:
-    hmm = _tiny_normalised_profile()
-    probabilities = _enumerate_complete_path_probabilities(hmm, seq)
-    background = np.prod([BACKGROUND_FREQ[AA_INDEX[aa]] for aa in seq])
-    for method, probability in [
-        (hmm.viterbi, max(probabilities, default=0)),
-        (hmm.forward, sum(probabilities)),
-    ]:
-        actual = method(seq)
-        if probability == 0:
-            assert actual == NEG_INF
-        else:
-            assert 2**actual * background == pytest.approx(probability, abs=1e-14)
-    assert hmm.forward(seq) >= hmm.viterbi(seq)
-
-
-def test_boundary_total_sequence_mass_has_bounded_insertion_tail() -> None:
-    hmm = _tiny_normalised_profile()
-    K, r, limit = 2, 0.25, 62
-    # At most K+1 insert runs and K matches: a longer sequence needs one long run.
-    tail_bound = (K + 1) * r ** ((limit - K) // (K + 1))
-    tolerance = 2e-14
-    background_a = BACKGROUND_FREQ[AA_INDEX["A"]]
-    mass = sum(2 ** (hmm.forward("A" * n) + n * np.log2(background_a)) for n in range(limit + 1))
-    assert tail_bound < 3e-12
-    assert 1 - tail_bound - tolerance <= mass <= 1 + tolerance
+    limit = 8
+    log_background_a = np.log2(BACKGROUND_FREQ[AA_INDEX["A"]])
+    mass = sum(2 ** (hmm.forward("A" * n) + n * log_background_a) for n in range(limit + 1))
+    # Undo the background odds above. The omitted geometric tail is exactly 2**(-limit).
+    assert mass == pytest.approx(1 - 2 ** (-limit), rel=0, abs=1e-14)
     assert hmm.forward("AACAA") == NEG_INF

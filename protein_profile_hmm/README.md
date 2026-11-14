@@ -144,17 +144,7 @@ follows HMMER's left-to-right pair-repair convention, and
 `_count_emissions`/`_count_transitions` count the repaired paths.
 
 The full-profile graph with boundary inserts and explicit exits corresponds
-to HMMER's core `P7_HMM` topology. HMMER's configured `P7_PROFILE` search
-graph disables I0 and terminal I_K and uses separate flank states. The shared
-scalar smoothing and uniform fallback at zero pseudocount are local policies;
-HMMER uses distinct nonuniform transition priors and a mixture emission prior
-by default.
-HMMER's null model includes a geometric length component, while these scores
-use only the background residue product. The pinned upstream
-[profile configuration](https://github.com/EddyRivasLab/hmmer/blob/9acd8b6758a0ca5d21db6d167e0277484341929b/src/modelconfig.c),
-[parameter estimation](https://github.com/EddyRivasLab/hmmer/blob/9acd8b6758a0ca5d21db6d167e0277484341929b/src/p7_prior.c),
-and [background model](https://github.com/EddyRivasLab/hmmer/blob/9acd8b6758a0ca5d21db6d167e0277484341929b/src/p7_bg.c)
-show these differences.
+to HMMER's core `P7_HMM` topology. See HMMER [repo](https://github.com/EddyRivasLab/hmmer/blob/9acd8b6758a0ca5d21db6d167e0277484341929b/src/hmmer.h#L116-L152) for details.
 
 ## Following query scoring
 
@@ -177,8 +167,7 @@ After consuming the entire query, each scorer adds the corresponding
 `T_ME`, `T_IE`, or `T_DE` exit score to M_K, I_K, or D_K. Viterbi takes the
 maximum of those complete-path candidates; Forward takes their base-2 log-sum.
 Exit costs are applied once, after the last residue, and are excluded from
-partial rows. An empty query follows B → D1 → … → D_K → End. Impossible
-queries return negative infinity.
+partial rows. An empty query follows B → D1 → … → D_K → End.
 
 For example:
 
