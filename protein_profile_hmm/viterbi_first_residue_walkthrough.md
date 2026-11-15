@@ -273,8 +273,10 @@ M[1, 1] = _match_odds(0, aa) + best = 1.155 - 0.585 = 0.570
 `Id[1, 1]` would emit the first query A at I1, so its predecessor must have
 consumed zero residues. `M[0, 1]` is unreachable because entering M1 consumes
 a residue; `Id[0, 1]` is unreachable because entering I1 also consumes a
-residue. For query `AAAA`, the earliest valid path through I1 is
-`M1(first A) -> I1(second A)`, reaching `Id[2, 1]`. Both `M[0, 1]` and `Id[0, 1]` therefore remain valued at `NEG_INF`, which now means exact negative infinity. Adding an insert emission keeps the score at `NEG_INF`.
+residue.
+
+For the query `AAAA`, the earliest valid path through I1 is
+`M1(first A) -> I1(second A)`, reaching `Id[2, 1]`. Both `M[0, 1]` and `Id[0, 1]` therefore remain valued at `NEG_INF`. Adding an insert emission keeps the score at `NEG_INF`.
 `D[1, 1]` stays unreachable because D1 is only entered from Begin at `i = 0`.
 
 ### i = 1, k = 2: A match or deletion at position 2

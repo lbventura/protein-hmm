@@ -524,6 +524,4 @@ consensus positions. All residues are consumed and the path reaches End once.
 | M2 -> M3(fourth A) | log2(3/5) = -0.737 | -0.845 | -4.514 |
 | M3 -> End | log2(4/5) = -0.322 | None | -4.836 |
 
-`hmm.viterbi("AAAA")` returns **-4.836061798 bits**, rounded to nine decimal places.
-All other displayed scores are rounded to three decimal places, so adding
-the displayed approximations may differ in the last digit.
+`hmm.viterbi("AAAA")` returns **-4.836 bits**, rounded to four decimal places.
