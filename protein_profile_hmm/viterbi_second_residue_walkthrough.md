@@ -19,9 +19,9 @@ The scores computed for the first iteration, where one A was consumed, are:
 
 | Table entry | k = 0 | k = 1 | k = 2 | k = 3 |
 |---|---:|---:|---:|---:|
-| `M[1, k]` | NEG_INF | 0.833 | -4.102 | -4.752 |
-| `Id[1, k]` | 0 | NEG_INF | NEG_INF | NEG_INF |
-| `D[1, k]` | NEG_INF | NEG_INF | -0.752 | -2.336 |
+| `M[1, k]` | NEG_INF | 0.570 | -4.365 | -5.015 |
+| `Id[1, k]` | -2.585 | NEG_INF | NEG_INF | NEG_INF |
+| `D[1, k]` | NEG_INF | NEG_INF | -1.015 | -2.600 |
 
 The chart should be read from left to right as `k` increases. Yellow nodes contain scores from `i = 1`; the other state nodes contain scores
 at `i = 2`. Match and insert arrows consume the second A; deletion arrows
@@ -39,39 +39,39 @@ The probability-to-score computations remain [below](#transition-probabilities).
 flowchart LR
     subgraph K0["k = 0: before the profile"]
         direction TB
-        I10["Id[1, 0] = 0<br/>First A emitted at I0"]
-        I20["Id[2, 0] = -1<br/>I0 emits A; emission = 0"]
+        I10["Id[1, 0] = -2.585<br/>First A emitted at I0"]
+        I20["Id[2, 0] = -3.585<br/>I0 emits A; emission = 0"]
         U0["M[2, 0], D[2, 0]<br/>NEG_INF"]
     end
 
     subgraph K1["k = 1: first match position"]
         direction TB
-        M11["M[1, 1] = 0.833<br/>First A emitted at M1"]
-        M21["M[2, 1] = 0.155<br/>M1 emits A; emission = +1.155"]
-        I21["Id[2, 1] = -0.889<br/>I1 emits A; emission = -0.138"]
+        M11["M[1, 1] = 0.570<br/>First A emitted at M1"]
+        M21["M[2, 1] = -2.430<br/>M1 emits A; emission = +1.155"]
+        I21["Id[2, 1] = -1.152<br/>I1 emits A; emission = -0.138"]
         U1["D[2, 1]<br/>NEG_INF"]
     end
 
     subgraph K2["k = 2: second match position"]
         direction TB
-        M12["M[1, 2] = -4.102<br/>First A emitted at M2"]
-        D12["D[1, 2] = -0.752<br/>A emitted at M1; skip position 2"]
-        M22["M[2, 2] = -1.532<br/>M2 emits A; emission = -0.780"]
-        I22["Id[2, 2] = -6.424<br/>I2 emits A; emission = 0"]
-        D22["D[2, 2] = -1.430<br/>Skip position 2; no emission"]
+        M12["M[1, 2] = -4.365<br/>First A emitted at M2"]
+        D12["D[1, 2] = -1.015<br/>A emitted at M1; skip position 2"]
+        M22["M[2, 2] = -1.795<br/>M2 emits A; emission = -0.780"]
+        I22["Id[2, 2] = -6.687<br/>I2 emits A; emission = 0"]
+        D22["D[2, 2] = -4.015<br/>Skip position 2; no emission"]
     end
 
     subgraph K3["k = 3: third match position"]
         direction TB
-        M13["M[1, 3] = -4.752<br/>First A emitted at M3"]
-        D13["D[1, 3] = -2.336<br/>Cannot consume another residue"]
-        CM["Via M[1, 2]: -4.839"]
-        CD["Via D[1, 2]: -1.336"]
-        M23["M[2, 3] = -2.181<br/>M3 emits A; emission = -0.845"]
-        I23["Id[2, 3] = -4.752<br/>I3 emits A; emission = 0"]
-        CM2["Via M[2, 2]: -3.854"]
-        CD2["Via D[2, 2]: -3.015"]
-        D23["D[2, 3] = -3.015<br/>Skip position 3; no emission"]
+        M13["M[1, 3] = -5.015<br/>First A emitted at M3"]
+        D13["D[1, 3] = -2.600<br/>Cannot consume another residue"]
+        CM["Via M[1, 2]: -5.102"]
+        CD["Via D[1, 2]: -1.600"]
+        M23["M[2, 3] = -2.444<br/>M3 emits A; emission = -0.845"]
+        I23["Id[2, 3] = -7.336<br/>I3 emits A; emission = 0"]
+        CM2["Via M[2, 2]: -4.117"]
+        CD2["Via D[2, 2]: -5.600"]
+        D23["D[2, 3] = -4.117<br/>Skip position 3; no emission"]
     end
 
     I10 -->|"log_trans[0, T_II]: -1"| I20
@@ -84,11 +84,11 @@ flowchart LR
     D12 -->|"log_trans[2, T_DM]: -0.585"| CD
     CM -.-> M23
     CD --> M23
-    M13 -->|"log_trans[3, T_MI]: 0"| I23
-    M22 -.->|"log_trans[2, T_MD]: -2.322"| CM2
-    D22 -->|"log_trans[2, T_DD]: -1.585"| CD2
-    CM2 -.-> D23
-    CD2 --> D23
+    M13 -->|"log_trans[3, T_MI]: -2.322"| I23
+    M22 -->|"log_trans[2, T_MD]: -2.322"| CM2
+    D22 -.->|"log_trans[2, T_DD]: -1.585"| CD2
+    CM2 --> D23
+    CD2 -.-> D23
 
     classDef initial fill:#fff3cd,stroke:#856404,color:#111827;
     classDef match fill:#dbeafe,stroke:#2563eb,color:#111827;
@@ -102,8 +102,8 @@ flowchart LR
     class I20,I21,I22,I23 insert;
     class D22,D23 deletion;
     class U0,U1 unreachable;
-    class CD,CD2 selected;
-    class CM,CM2 rejected;
+    class CD,CM2 selected;
+    class CM,CD2 rejected;
 ```
 
 For example, the arrow from `M[2, 1]` goes to `D[2, 2]`: it skips profile
@@ -123,8 +123,7 @@ turn out to be unreachable at this iteration.
 
 | Source and slot | Transitions, in order | Observed counts | Counts plus one each | Probabilities | `log_trans` values |
 |---|---|---|---|---|---|
-| Begin, 0 | `T_BM`, `T_BD` | 3, 0 | 4, 1 | 4/5, 1/5 | -0.322, -2.322 |
-| Virtual M0, 0 | `T_MI` | 0 | 1 | 1 | 0 |
+| Begin, 0 | `T_BM`, `T_MI`, `T_BD` | 3, 0, 0 | 4, 1, 1 | 4/6, 1/6, 1/6 | -0.585, -2.585, -2.585 |
 | I0, 0 | `T_IM`, `T_II` | 0, 0 | 1, 1 | 1/2, 1/2 | -1, -1 |
 | M1, 1 | `T_MM`, `T_MI`, `T_MD` | 1, 1, 1 | 2, 2, 2 | 1/3, 1/3, 1/3 | -1.585, -1.585, -1.585 |
 | I1, 1 | `T_IM`, `T_II` | 1, 1 | 2, 2 | 1/2, 1/2 | -1, -1 |
@@ -132,13 +131,15 @@ turn out to be unreachable at this iteration.
 | M2, 2 | `T_MM`, `T_MI`, `T_MD` | 2, 0, 0 | 3, 1, 1 | 3/5, 1/5, 1/5 | -0.737, -2.322, -2.322 |
 | I2, 2 | `T_IM`, `T_II` | 0, 0 | 1, 1 | 1/2, 1/2 | -1, -1 |
 | D2, 2 | `T_DM`, `T_DD` | 1, 0 | 2, 1 | 2/3, 1/3 | -0.585, -1.585 |
-| M3, 3 | `T_MI` | 0 | 1 | 1 | 0 |
-| I3, 3 | `T_II` | 0 | 1 | 1 | 0 |
+| M3, 3 | `T_MI`, `T_ME` | 0, 3 | 1, 4 | 1/5, 4/5 | -2.322, -0.322 |
+| I3, 3 | `T_II`, `T_IE` | 0, 0 | 1, 1 | 1/2, 1/2 | -1, -1 |
+| D3, 3 | `T_DE` | 0 | 1 | 1 | 0 |
 
 
 
-M3's `T_MI` and I3's `T_II` are each normalized in a singleton group in this
-implementation, giving probability 1. Begin's `T_BM` is still 4/5, but
+M3's insertion competes with End, giving `T_MI = 1/5` and `T_ME = 4/5`.
+I3's loop competes with End, giving `T_II = T_IE = 1/2`.
+Begin's `T_BM` is 4/6, but
 `M[1, 0]` is unreachable: a path cannot return to Begin after consuming a residue.
 
 ### Emission scores for the second A
@@ -167,9 +168,9 @@ Thus `_insert_odds(1, aa) = log2(20/22) = -0.138`.
 ```text
 cands_i = [M[1, 0] + log_trans[0, T_MI],
            Id[1, 0] + log_trans[0, T_II]]
-        = [NEG_INF + 0, 0 - 1]
-best_i = -1
-Id[2, 0] = _insert_odds(0, aa) + best_i = 0 - 1 = -1
+        = [NEG_INF - 2.585, -2.585 - 1]
+best_i = -3.585
+Id[2, 0] = _insert_odds(0, aa) + best_i = 0 - 3.585 = -3.585
 ```
 
 The path is `B -> I0(first A) -> I0(second A)`. Both residues occur before the
@@ -193,9 +194,9 @@ For the match update, the predecessor is I0:
 ```text
 cands = [M[1, 0] + log_trans[0, T_BM],
          Id[1, 0] + log_trans[0, T_IM]]
-      = [NEG_INF - 0.322, 0 - 1]
-best = -1
-M[2, 1] = _match_odds(0, aa) + best = 1.155 - 1 = 0.155
+      = [NEG_INF - 0.585, -2.585 - 1]
+best = -3.585
+M[2, 1] = _match_odds(0, aa) + best = 1.155 - 3.585 = -2.430
 ```
 
 This is `B -> I0(first A) -> M1(second A)`: the first A was inserted before
@@ -212,9 +213,9 @@ For the insert update, the predecessor is M1:
 ```text
 cands_i = [M[1, 1] + log_trans[1, T_MI],
            Id[1, 1] + log_trans[1, T_II]]
-        = [0.833 - 1.585, NEG_INF - 1]
-best_i = -0.752
-Id[2, 1] = _insert_odds(1, aa) + best_i = -0.138 - 0.752 = -0.889
+        = [0.570 - 1.585, NEG_INF - 1]
+best_i = -1.015
+Id[2, 1] = _insert_odds(1, aa) + best_i = -0.138 - 1.015 = -1.152
 ```
 
 This is `B -> M1(first A) -> I1(second A)`. Unlike `Id[1, 1]` in the first
@@ -239,9 +240,9 @@ In this instance, there are three possible predecessors for the match state:
 cands = [M[1, 1] + log_trans[1, T_MM],
          Id[1, 1] + log_trans[1, T_IM],
          D[1, 1] + log_trans[1, T_DM]]
-      = [0.833 - 1.585, NEG_INF - 1, NEG_INF - 1]
-best = -0.752
-M[2, 2] = _match_odds(1, aa) + best = -0.780 - 0.752 = -1.532
+      = [0.570 - 1.585, NEG_INF - 1, NEG_INF - 1]
+best = -1.015
+M[2, 2] = _match_odds(1, aa) + best = -0.780 - 1.015 = -1.795
 ```
 
 The path matches both residues: `B -> M1(first A) -> M2(second A)`.
@@ -259,9 +260,9 @@ The insert update also uses row 1:
 ```text
 cands_i = [M[1, 2] + log_trans[2, T_MI],
            Id[1, 2] + log_trans[2, T_II]]
-        = [-4.102 - 2.322, NEG_INF - 1]
-best_i = -6.424
-Id[2, 2] = _insert_odds(2, aa) + best_i = 0 - 6.424 = -6.424
+        = [-4.365 - 2.322, NEG_INF - 1]
+best_i = -6.687
+Id[2, 2] = _insert_odds(2, aa) + best_i = 0 - 6.687 = -6.687
 ```
 
 The path is `B -> D1 -> M2(first A) -> I2(second A)`.
@@ -279,8 +280,8 @@ The delete update uses the `M[2,1]` value computed at `i = 2, k = 1`:
 ```text
 cands_d = [M[2, 1] + log_trans[1, T_MD],
            D[2, 1] + log_trans[1, T_DD]]
-        = [0.155 - 1.585, NEG_INF - 1]
-D[2, 2] = max(cands_d) = -1.430
+        = [-2.430 - 1.585, NEG_INF - 1]
+D[2, 2] = max(cands_d) = -4.015
 ```
 
 The path is `B -> I0(first A) -> M1(second A) -> D2`. Both A residues have
@@ -300,15 +301,15 @@ Query assignment:    first A      second A    gap (D2)
 cands = [M[1, 2] + log_trans[2, T_MM],
          Id[1, 2] + log_trans[2, T_IM],
          D[1, 2] + log_trans[2, T_DM]]
-      = [-4.102 - 0.737, NEG_INF - 1, -0.752 - 0.585]
-      = [-4.839, NEG_INF, -1.336]
-best = -1.336
-M[2, 3] = _match_odds(2, aa) + best = -0.845 - 1.336 = -2.181
+      = [-4.365 - 0.737, NEG_INF - 1, -1.015 - 0.585]
+      = [-5.102, NEG_INF, -1.600]
+best = -1.600
+M[2, 3] = _match_odds(2, aa) + best = -0.845 - 1.600 = -2.444
 ```
 
 The route through `D[1, 2]` wins. It matched the first A at M1 and skipped
 position 2: `B -> M1(first A) -> D2 -> M3(second A)`. The other reachable
-route, `B -> D1 -> M2(first A) -> M3(second A)`, would have a final score `-5.684 < -2.181` after the M3 emission contribution.
+route, `B -> D1 -> M2(first A) -> M3(second A)`, would have a final score `-5.947 < -2.444` after the M3 emission contribution.
 
 Both candidates reach M3; their assignments differ at positions 1 and 2:
 
@@ -326,9 +327,9 @@ For insertion after M3:
 ```text
 cands_i = [M[1, 3] + log_trans[3, T_MI],
            Id[1, 3] + log_trans[3, T_II]]
-        = [-4.752 + 0, NEG_INF + 0]
-best_i = -4.752
-Id[2, 3] = _insert_odds(3, aa) + best_i = 0 - 4.752 = -4.752
+        = [-5.015 - 2.322, NEG_INF - 1]
+best_i = -7.336
+Id[2, 3] = _insert_odds(3, aa) + best_i = 0 - 7.336 = -7.336
 ```
 
 The path is `B -> D1 -> D2 -> M3(first A) -> I3(second A)`.
@@ -346,14 +347,14 @@ For deletion, compare two paths that have already consumed both A residues:
 ```text
 cands_d = [M[2, 2] + log_trans[2, T_MD],
            D[2, 2] + log_trans[2, T_DD]]
-        = [-1.532 - 2.322, -1.430 - 1.585]
-        = [-3.854, -3.015]
-D[2, 3] = max(cands_d) = -3.015
+        = [-1.795 - 2.322, -4.015 - 1.585]
+        = [-4.117, -5.600]
+D[2, 3] = max(cands_d) = -4.117
 ```
 
-Of the two paths, `B -> I0(first A) -> M1(second A) -> D2 -> D3` and `B -> M1(first A) -> M2(second A) -> D3`, the former wins.
+Of the two paths, `B -> I0(first A) -> M1(second A) -> D2 -> D3` and `B -> M1(first A) -> M2(second A) -> D3`, the latter wins.
 
-Retained alignment at `D[2, 3]`:
+Rejected alignment at `D[2, 3]`:
 
 ```text
 Profile position:    I0           M1          M2          M3
@@ -363,7 +364,7 @@ Training row 3:      no residues  A           gap         E
 Query assignment:    first A      second A    gap (D2)    gap (D3)
 ```
 
-Rejected alignment at `D[2, 3]`:
+Retained alignment at `D[2, 3]`:
 
 ```text
 Profile position:    M1          M2          M3
@@ -377,9 +378,9 @@ Query assignment:    first A     second A    gap (D3)
 
 | Table entry | k = 0 | k = 1 | k = 2 | k = 3 |
 |---|---:|---:|---:|---:|
-| `M[2, k]` | NEG_INF | 0.155 | -1.532 | -2.181 |
-| `Id[2, k]` | -1 | -0.889 | -6.424 | -4.752 |
-| `D[2, k]` | NEG_INF | NEG_INF | -1.430 | -3.015 |
+| `M[2, k]` | NEG_INF | -2.430 | -1.795 | -2.444 |
+| `Id[2, k]` | -3.585 | -1.152 | -6.687 | -7.336 |
+| `D[2, k]` | NEG_INF | NEG_INF | -4.015 | -4.117 |
 
 These are nine separate reachable endpoints, each retaining its own best path.
 There is no overall winner yet as two query A residues remain.  As with `D[1, 3]`, `D[2, 3]` has no way to consume another

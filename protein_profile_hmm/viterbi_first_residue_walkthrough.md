@@ -30,38 +30,38 @@ flowchart LR
     subgraph K0["k = 0: before the profile"]
         direction TB
         B["M[0, 0] = 0<br/>Begin; no residues consumed"]
-        I10["Id[1, 0] = 0<br/>I0 emits A; emission = 0"]
+        I10["Id[1, 0] = -2.585<br/>I0 emits A; emission = 0"]
         U0["M[1, 0], D[1, 0]<br/>NEG_INF"]
     end
 
     subgraph K1["k = 1: first match position"]
         direction TB
-        D01["D[0, 1] = -2.322<br/>Skip position 1; no residues consumed"]
-        M11["M[1, 1] = 0.833<br/>M1 emits A; emission = +1.155"]
+        D01["D[0, 1] = -2.585<br/>Skip position 1; no residues consumed"]
+        M11["M[1, 1] = 0.570<br/>M1 emits A; emission = +1.155"]
         U1["Id[1, 1], D[1, 1]<br/>NEG_INF"]
     end
 
     subgraph K2["k = 2: second match position"]
         direction TB
-        D02["D[0, 2] = -3.322<br/>Skip positions 1 and 2; no residues consumed"]
-        M12["M[1, 2] = -4.102<br/>M2 emits A; emission = -0.780"]
-        D12["D[1, 2] = -0.752<br/>A emitted at M1; skip position 2"]
+        D02["D[0, 2] = -3.585<br/>Skip positions 1 and 2; no residues consumed"]
+        M12["M[1, 2] = -4.365<br/>M2 emits A; emission = -0.780"]
+        D12["D[1, 2] = -1.015<br/>A emitted at M1; skip position 2"]
         U2["Id[1, 2]<br/>NEG_INF"]
     end
 
     subgraph K3["k = 3: third match position"]
         direction TB
-        D03["D[0, 3] = -4.907<br/>Skip all three positions; no residues consumed"]
-        M13["M[1, 3] = -4.752<br/>M3 emits A; emission = -0.845"]
-        CM["Via M[1, 2]: -6.424"]
-        CD["Via D[1, 2]: -2.336"]
-        D13["D[1, 3] = -2.336<br/>A emitted at M1; skip positions 2 and 3"]
+        D03["D[0, 3] = -5.170<br/>Skip all three positions; no residues consumed"]
+        M13["M[1, 3] = -5.015<br/>M3 emits A; emission = -0.845"]
+        CM["Via M[1, 2]: -6.687"]
+        CD["Via D[1, 2]: -2.600"]
+        D13["D[1, 3] = -2.600<br/>A emitted at M1; skip positions 2 and 3"]
         U3["Id[1, 3]<br/>NEG_INF"]
     end
 
-    B -->|"log_trans[0, T_MI]: 0"| I10
-    B -->|"log_trans[0, T_BM]: -0.322"| M11
-    B -->|"log_trans[0, T_BD]: -2.322"| D01
+    B -->|"log_trans[0, T_MI]: -2.585"| I10
+    B -->|"log_trans[0, T_BM]: -0.585"| M11
+    B -->|"log_trans[0, T_BD]: -2.585"| D01
     D01 -->|"log_trans[1, T_DD]: -1"| D02
     D02 -->|"log_trans[2, T_DD]: -1.585"| D03
     D01 -->|"log_trans[1, T_DM]: -1"| M12
@@ -94,18 +94,18 @@ For example:
 
 ```text
 M[1, 1] = M[0, 0] + log_trans[0, T_BM] + _match_odds(0, aa)
-        = 0 - 0.322 + 1.155 = 0.833
+        = 0 - 0.585 + 1.155 = 0.570
 
 D[1, 2] = M[1, 1] + log_trans[1, T_MD]
-        = 0.833 - 1.585 = -0.752
+        = 0.570 - 1.585 = -1.015
 ```
 
 `M[1, 1]` scores aligning the first query A to the first profile match position:
 
 - `M[0, 0] = 0` is the starting score at Begin, before consuming any residue.
   The empty path has probability 1 and score `log2(1) = 0`.
-- `log_trans[0, T_BM] = log2(4/5) = -0.322` scores entering M1 from Begin.
-  All three training rows take this transition. The alternative Begin-to-D1 does not occur in the training data. Adding the pseudocounts and normalizing these outgoing results in`4 / (4 + 1) = 4/5`.
+- `log_trans[0, T_BM] = log2(4/6) = -0.585` scores entering M1 from Begin.
+  All three training rows take this transition. The alternatives Begin-to-I0 and Begin-to-D1 do not occur in the training data. Adding the pseudocounts and normalizing these outgoing results in `4 / (4 + 1 + 1) = 4/6`.
 - `_match_odds(0, aa) = 1.155` scores emitting A at M1 relative to background.
   M1 observes three A residues. With one pseudocount per amino acid,
   `P(A | M1) = (3 + 1) / (3 + 20) = 4/23`. Dividing by the background A
@@ -113,7 +113,7 @@ D[1, 2] = M[1, 1] + log_trans[1, T_MD]
   A is more likely at M1 than under the background model.
 
 Adding these terms combines the starting path, the transition, and the emission
-into a score of `0.833` bits for `B -> M1(A)`.
+into a score of `0.570` bits for `B -> M1(A)`.
 
 `Id[1, 1]`, `Id[1, 2]`, and `Id[1, 3]` stay unreachable because their predecessors
 `M[0, k]` and `Id[0, k]` are unreachable for those positions. For example,
@@ -125,9 +125,9 @@ After finishing `i = 1`, the tables contain:
 
 | Table entry | k = 0 | k = 1 | k = 2 | k = 3 |
 |---|---:|---:|---:|---:|
-| `M[1, k]` | NEG_INF | 0.833 | -4.102 | -4.752 |
-| `Id[1, k]` | 0 | NEG_INF | NEG_INF | NEG_INF |
-| `D[1, k]` | NEG_INF | NEG_INF | -0.752 | -2.336 |
+| `M[1, k]` | NEG_INF | 0.570 | -4.365 | -5.015 |
+| `Id[1, k]` | -2.585 | NEG_INF | NEG_INF | NEG_INF |
+| `D[1, k]` | NEG_INF | NEG_INF | -1.015 | -2.600 |
 
 Viterbi retains the best path to each cell - for example, the dotted path linking `M[1,2]` to `D[1,3]` is passed over given `D[1,2] -> D[1,3]` - but states remains available for the next iteration (e.g, `M[1, 2]` can play a role in processing the second A).
 
@@ -168,8 +168,7 @@ The order of each list below matches the order in the transition column.
 
 | Source and slot | Transitions | Observed counts | Counts plus one each | Total | Probabilities |
 |---|---|---|---|---:|---|
-| Begin, 0 | `T_BM`, `T_BD` | 3, 0 | 4, 1 | 5 | 4/5, 1/5 |
-| Virtual M0, 0 | `T_MI` | 0 | 1 | 1 | 1 |
+| Begin, 0 | `T_BM`, `T_MI`, `T_BD` | 3, 0, 0 | 4, 1, 1 | 6 | 4/6, 1/6, 1/6 |
 | I0, 0 | `T_IM`, `T_II` | 0, 0 | 1, 1 | 2 | 1/2, 1/2 |
 | M1, 1 | `T_MM`, `T_MI`, `T_MD` | 1, 1, 1 | 2, 2, 2 | 6 | 1/3, 1/3, 1/3 |
 | I1, 1 | `T_IM`, `T_II` | 1, 1 | 2, 2 | 4 | 1/2, 1/2 |
@@ -179,9 +178,9 @@ The order of each list below matches the order in the transition column.
 
 Walking through the table rows with nonzero observations:
 
-- **Begin, slot 0 — `[T_BM, T_BD] = [3, 0]`**
+- **Begin, slot 0 — `[T_BM, T_MI, T_BD] = [3, 0, 0]`**
   All three rows start with `M1(A)`, so each contributes one `B → M1`.
-  None starts with `D1`.
+  None starts with `I0` or `D1`.
 - **M1, slot 1 — `[T_MM, T_MI, T_MD] = [1, 1, 1]`**
   Row 2 contributes `M1 → M2` (`T_MM`).
   Row 1 contributes `M1 → I1` (`T_MI`).
@@ -197,16 +196,19 @@ Walking through the table rows with nonzero observations:
 - **D2, slot 2 — `[T_DM, T_DD] = [1, 0]`**
   Row 3 alone contributes `D2 → M3(E)` (`T_DM`). No row takes `D2 → D3`.
 
-The code normalizes virtual M0's `T_MI` in its own singleton group, separately
-from Begin's `T_BM` and `T_BD`; this is why that entry has probability 1.
+Begin's `T_BM`, `T_MI`, and `T_BD` compete in one distribution.
+Counting also adds one M3-to-End exit for each training row, without
+adding End events to the stored traces. At M3, insertion and End have
+smoothed counts `[1, 4]`, giving probabilities `1/5` and `4/5`.
+At I3, looping and End each have probability `1/2`; D3 exits with probability 1.
 
 Computing `log2` gives the transition contributions:
 
 | Code entry | Meaning | Probability | `log_trans` |
 |---|---|---:|---:|
-| `[0, T_MI]` | Begin via virtual M0 -> I0 | 1 | 0 |
-| `[0, T_BM]` | Begin -> M1 | 4/5 | -0.322 |
-| `[0, T_BD]` | Begin -> D1 | 1/5 | -2.322 |
+| `[0, T_MI]` | Begin via virtual M0 -> I0 | 1/6 | -2.585 |
+| `[0, T_BM]` | Begin -> M1 | 4/6 | -0.585 |
+| `[0, T_BD]` | Begin -> D1 | 1/6 | -2.585 |
 | `[0, T_IM]` | I0 -> M1 | 1/2 | -1 |
 | `[0, T_II]` | I0 -> I0 | 1/2 | -1 |
 | `[1, T_DM]` | D1 -> M2 | 1/2 | -1 |
@@ -238,11 +240,11 @@ These entries consume no query residues and include no emission contributions:
 
 ```text
 D[0, 1] = log_trans[0, T_BD]
-        = -2.322
+        = -2.585
 D[0, 2] = D[0, 1] + log_trans[1, T_DD]
-        = -2.322 - 1 = -3.322
+        = -2.585 - 1 = -3.585
 D[0, 3] = D[0, 2] + log_trans[2, T_DD]
-        = -3.322 - 1.585 = -4.907
+        = -3.585 - 1.585 = -5.170
 ```
 
 ### i = 1, k = 0: A leading insertion
@@ -250,9 +252,9 @@ D[0, 3] = D[0, 2] + log_trans[2, T_DD]
 ```text
 cands_i = [M[0, 0] + log_trans[0, T_MI],
            Id[0, 0] + log_trans[0, T_II]]
-        = [0 + 0, NEG_INF - 1]
-best_i = 0
-Id[1, 0] = _insert_odds(0, aa) + best_i = 0 + 0 = 0
+        = [0 - 2.585, NEG_INF - 1]
+best_i = -2.585
+Id[1, 0] = _insert_odds(0, aa) + best_i = 0 - 2.585 = -2.585
 ```
 
 This path emits the first A at I0. `M[0, 0]` is the virtual starting slot
@@ -263,17 +265,18 @@ representing Begin. `M[1, 0]` and `D[1, 0]` remain unreachable.
 ```text
 cands = [M[0, 0] + log_trans[0, T_BM],
          Id[0, 0] + log_trans[0, T_IM]]
-      = [0 - 0.322, NEG_INF - 1]
-best = -0.322
-M[1, 1] = _match_odds(0, aa) + best = 1.155 - 0.322 = 0.833
+      = [0 - 0.585, NEG_INF - 1]
+best = -0.585
+M[1, 1] = _match_odds(0, aa) + best = 1.155 - 0.585 = 0.570
 ```
 
 `Id[1, 1]` would emit the first query A at I1, so its predecessor must have
 consumed zero residues. `M[0, 1]` is unreachable because entering M1 consumes
 a residue; `Id[0, 1]` is unreachable because entering I1 also consumes a
-residue. For query `AAAA`, the earliest valid path through I1 is
-`M1(first A) -> I1(second A)`, reaching `Id[2, 1]`. Both `M[0, 1]` and `Id[0, 1]` therefore remain valued at `NEG_INF`, so the `best_insert > NEG_INF / 2`
-check fails and no insert emission is added.
+residue.
+
+For the query `AAAA`, the earliest valid path through I1 is
+`M1(first A) -> I1(second A)`, reaching `Id[2, 1]`. Both `M[0, 1]` and `Id[0, 1]` therefore remain valued at `NEG_INF`. Adding an insert emission keeps the score at `NEG_INF`.
 `D[1, 1]` stays unreachable because D1 is only entered from Begin at `i = 0`.
 
 ### i = 1, k = 2: A match or deletion at position 2
@@ -282,8 +285,8 @@ For the match update, the candidates from `M[0, 1]` and `Id[0, 1]` are
 unreachable. The only reachable predecessor is `D[0, 1]`:
 
 ```text
-best = D[0, 1] + log_trans[1, T_DM] = -2.322 - 1 = -3.322
-M[1, 2] = _match_odds(1, aa) + best = -0.780 - 3.322 = -4.102
+best = D[0, 1] + log_trans[1, T_DM] = -2.585 - 1 = -3.585
+M[1, 2] = _match_odds(1, aa) + best = -0.780 - 3.585 = -4.365
 ```
 
 For deletion, use the same query row, because no residue is emitted:
@@ -291,8 +294,8 @@ For deletion, use the same query row, because no residue is emitted:
 ```text
 cands_d = [M[1, 1] + log_trans[1, T_MD],
            D[1, 1] + log_trans[1, T_DD]]
-        = [0.833 - 1.585, NEG_INF - 1]
-D[1, 2] = max(cands_d) = -0.752
+        = [0.570 - 1.585, NEG_INF - 1]
+D[1, 2] = max(cands_d) = -1.015
 ```
 
 `Id[1, 2]` remains unreachable: both `M[0, 2]` and `Id[0, 2]` are unreachable.
@@ -302,8 +305,8 @@ D[1, 2] = max(cands_d) = -0.752
 For matching, only the predecessor `D[0, 2]` is reachable:
 
 ```text
-best = D[0, 2] + log_trans[2, T_DM] = -3.322 - 0.585 = -3.907
-M[1, 3] = _match_odds(2, aa) + best = -0.845 - 3.907 = -4.752
+best = D[0, 2] + log_trans[2, T_DM] = -3.585 - 0.585 = -4.170
+M[1, 3] = _match_odds(2, aa) + best = -0.845 - 4.170 = -5.015
 ```
 
 For deletion, two paths reach the same cell. Keep the larger score:
@@ -311,9 +314,9 @@ For deletion, two paths reach the same cell. Keep the larger score:
 ```text
 cands_d = [M[1, 2] + log_trans[2, T_MD],
            D[1, 2] + log_trans[2, T_DD]]
-        = [-4.102 - 2.322, -0.752 - 1.585]
-        = [-6.424, -2.336]
-D[1, 3] = max(cands_d) = -2.336
+        = [-4.365 - 2.322, -1.015 - 1.585]
+        = [-6.687, -2.600]
+D[1, 3] = max(cands_d) = -2.600
 ```
 
 `Id[1, 3]` remains unreachable: both `M[0, 3]` and `Id[0, 3]` are unreachable.
