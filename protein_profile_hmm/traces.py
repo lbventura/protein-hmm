@@ -13,7 +13,21 @@ NEG_INF: float = -np.inf
 
 
 class Transition(IntEnum):
-    """Column indices for the profile transition array."""
+    """Name the state changes stored in each column of the transition array.
+
+    Each name pairs a source and destination: M is Match (emit a residue at
+    a consensus position), I is Insert (emit an extra residue), and D is
+    Delete (skip a consensus position without emitting). B and E denote the
+    silent Begin and End states. Examples are:
+
+    - MM: M_k -> M_{k+1}, advance to the next match position.
+    - II: I_k -> I_k, emit another inserted residue at the same slot.
+    - MD: M_k -> D_{k+1}, skip the next consensus position.
+    - BM: Begin -> M1, enter the first match position (row 0 only).
+    - ME: M_K -> End, finish from the last match position (row K only).
+
+    At row 0, MI represents Begin -> I0, allowing leading insertions.
+    """
 
     MM = 0
     MI = 1
