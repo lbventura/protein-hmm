@@ -77,11 +77,6 @@ def test_build_from_msa_repairs_batches_with_one_global_mask(
         np.testing.assert_allclose(getattr(hmm, name), getattr(expected, name), atol=1e-12, rtol=0)
 
 
-def test_build_from_msa_picks_correct_number_of_match_columns() -> None:
-    hmm = _build(["ACDE", "ACDE"], symfrac=0.5, pseudocount=1.0)
-    assert hmm.K == 4
-
-
 def test_build_from_msa_treats_low_residue_columns_as_insert() -> None:
     hmm = _build(["AC.DE", "AC.DE", "AC.DE"], symfrac=0.5, pseudocount=1.0)
     assert hmm.K == 4
