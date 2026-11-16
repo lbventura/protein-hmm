@@ -3,8 +3,8 @@ channels:
   - conda-forge
 dependencies:
   - python=3.14
-  - numpy=2.5.4
+  - numpy=2.5.5
   - pytest=9.2.0
   - pre-commit=4.7.0
-  - ruff=0.17.4
+  - ruff=0.17.5
   - mypy=2.4.1
