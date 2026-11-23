@@ -6,5 +6,5 @@ dependencies:
   - numpy=2.5.5
   - pytest=9.2.0
   - pre-commit=4.7.0
-  - ruff=0.17.5
+  - ruff=0.17.6
   - mypy=2.4.1
